@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Shield: approval/trust -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,20 L76,30 L76,54 C76,71 65,82 54,88 C43,82 32,71 32,54 L32,30 Z" />
+    <!-- Checkmark, cut in the background color so it reads as a notch in the shield -->
+    <path
+        android:strokeColor="#6750A4"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M43,55 L51,63 L67,44" />
+</vector>

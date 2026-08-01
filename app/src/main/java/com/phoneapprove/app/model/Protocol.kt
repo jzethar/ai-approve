@@ -1,0 +1,79 @@
+package com.phoneapprove.app.model
+
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+/** Mirrors daemon/protocol.py's message schemas - keep the two in sync. */
+
+@Serializable
+data class QrPairingPayload(
+    val v: Int,
+    val id: String,
+    val host: String,
+    val port: Int,
+    val tok: String,
+    val name: String,
+)
+
+@Serializable
+data class HelloMessage(val type: String = "hello", val tok: String)
+
+@Serializable
+data class HelloAckMessage(val type: String = "hello_ack", val ok: Boolean)
+
+@Serializable
+data class RequestMessage(
+    val type: String = "request",
+    val req_id: String,
+    val session_id: String,
+    val tool_name: String,
+    val tool_input: String,
+    val cwd: String,
+    val ts: Double,
+)
+
+@Serializable
+data class ResponseMessage(
+    val type: String = "response",
+    val req_id: String,
+    val action: String,
+    val reply: String? = null,
+)
+
+// encodeDefaults=true is required: HelloMessage/ResponseMessage's `type`
+// field has a default value ("hello"/"response"), and kotlinx.serialization
+// omits fields that equal their default unless told otherwise - confirmed
+// via hands-on testing, where the daemon received {"tok":"..."} with no
+// "type" key at all and silently rejected it as a handshake mismatch.
+val protocolJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+sealed class IncomingMessage {
+    data class Ack(val ok: Boolean) : IncomingMessage()
+    data class Req(val message: RequestMessage) : IncomingMessage()
+    object Unknown : IncomingMessage()
+}
+
+fun parseIncoming(line: String): IncomingMessage {
+    return try {
+        val obj = protocolJson.parseToJsonElement(line).jsonObject
+        when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+            "hello_ack" -> IncomingMessage.Ack(protocolJson.decodeFromJsonElement(HelloAckMessage.serializer(), obj).ok)
+            "request" -> IncomingMessage.Req(protocolJson.decodeFromJsonElement(RequestMessage.serializer(), obj))
+            else -> IncomingMessage.Unknown
+        }
+    } catch (e: Exception) {
+        IncomingMessage.Unknown
+    }
+}
+
+fun parseQrPayload(text: String): QrPairingPayload? {
+    return try {
+        protocolJson.decodeFromString(QrPairingPayload.serializer(), text)
+    } catch (e: Exception) {
+        null
+    }
+}
