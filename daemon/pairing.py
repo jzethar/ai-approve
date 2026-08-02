@@ -3,6 +3,7 @@
 ~/.phone-ai-approve/pairing.json. Run this once (and again any time you want
 to re-pair/rotate the token) before scanning the code with the Android app.
 """
+import argparse
 import json
 import os
 import secrets
@@ -15,16 +16,60 @@ import protocol
 
 DEFAULT_PORT = 8642
 
+# Interface name prefixes that are never the right address to hand a phone:
+# VPN tunnels (which may hold the default route, fooling the UDP-connect
+# trick below) and container/virtual bridges. Linux-only, best-effort.
+_SKIP_IFACE_PREFIXES = (
+    "lo", "tun", "tap", "wg", "ppp", "utun", "tailscale", "zt",
+    "docker", "veth", "br-", "virbr",
+)
+# Prefixes of interfaces that are typically physical/Wi-Fi NICs - preferred
+# first when more than one non-VPN candidate is found.
+_PREFERRED_IFACE_PREFIXES = ("eth", "en", "wlan", "wlp", "enp", "wl")
+
+
+def _linux_lan_candidates():
+    """Best-effort list of (interface, ipv4) pairs from `ip -o -4 addr
+    show`, skipping loopback/VPN/virtual interfaces and preferring
+    physical-looking NIC names. Linux-only (relies on `ip` from
+    iproute2); callers must catch failures and fall back."""
+    out = subprocess.run(
+        ["ip", "-o", "-4", "addr", "show"],
+        capture_output=True, text=True, check=True, timeout=2,
+    ).stdout
+    candidates = []
+    for line in out.splitlines():
+        parts = line.split()
+        iface, addr = parts[1], parts[3].split("/")[0]
+        if iface.startswith(_SKIP_IFACE_PREFIXES):
+            continue
+        candidates.append((iface, addr))
+    candidates.sort(key=lambda c: not c[0].startswith(_PREFERRED_IFACE_PREFIXES))
+    return candidates
+
 
 def local_lan_ip():
     """Return this machine's LAN-facing IP address.
 
-    Opens a UDP socket "connected" to a public address - no packets are
-    actually sent, connect() on a UDP socket just asks the kernel to pick
-    the local route/address it would use, which we then read back via
-    getsockname(). Pure stdlib, works identically on Linux/macOS/Windows -
-    unlike the old `hcitool dev` approach, which was BlueZ/Linux-only.
+    On Linux, first tries to enumerate real network interfaces via `ip
+    addr` and picks a non-VPN one - a full-tunnel VPN (WireGuard,
+    Tailscale, etc.) grabbing the default route would otherwise make the
+    fallback below advertise a VPN-only address the phone can't reach.
+
+    Falls back to the old trick: open a UDP socket "connected" to a
+    public address - no packets are actually sent, connect() on a UDP
+    socket just asks the kernel to pick the local route/address it would
+    use, which we then read back via getsockname(). Pure stdlib, works
+    identically on Linux/macOS/Windows - unlike the old `hcitool dev`
+    approach, which was BlueZ/Linux-only.
     """
+    try:
+        candidates = _linux_lan_candidates()
+        if candidates:
+            return candidates[0][1]
+    except (OSError, subprocess.SubprocessError):
+        pass
+
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
             s.connect(("8.8.8.8", 80))
@@ -45,8 +90,8 @@ def load_pairing():
         return json.load(f)
 
 
-def generate_pairing(port=DEFAULT_PORT, name=None):
-    host = local_lan_ip()
+def generate_pairing(port=DEFAULT_PORT, name=None, host=None):
+    host = host or local_lan_ip()
     if host == "127.0.0.1":
         print(
             "warning: couldn't determine a LAN IP address (no network route found) - "
@@ -83,7 +128,17 @@ def render_qr(payload):
 
 
 def main():
-    payload = generate_pairing()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PHONE_APPROVE_HOST"),
+        help="override the auto-detected LAN IP (or set PHONE_APPROVE_HOST) - "
+             "use this if auto-detection picks a VPN/virtual interface instead "
+             "of the network your phone is actually on",
+    )
+    args = parser.parse_args()
+
+    payload = generate_pairing(host=args.host)
     render_qr(payload)
     print("\nSaved to", pairing_path())
     print("Restart the daemon (or it will pick this up on next lazy-spawn) to use it.")
