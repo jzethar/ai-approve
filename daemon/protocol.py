@@ -117,15 +117,35 @@ def build_phone_response(req_id, action, reply=None) -> dict:
     return msg
 
 
+def build_notify(session_id, cwd, message, ts) -> dict:
+    return {
+        "type": "notify",
+        "session_id": session_id,
+        "cwd": cwd,
+        "message": message,
+        "ts": ts,
+    }
+
+
 # ---- Local AF_UNIX messages (hook <-> daemon) ----
 
 def build_local_request(req_id, session_id, tool_name, tool_input, cwd) -> dict:
     return {
+        "type": "request",
         "req_id": req_id,
         "session_id": session_id,
         "tool_name": tool_name,
         "tool_input": tool_input,
         "cwd": cwd,
+    }
+
+
+def build_local_notify(session_id, cwd, message) -> dict:
+    return {
+        "type": "notify",
+        "session_id": session_id,
+        "cwd": cwd,
+        "message": message,
     }
 
 

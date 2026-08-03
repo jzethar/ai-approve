@@ -87,6 +87,37 @@ def relay_approval(tool_name, tool_input, session_id, cwd):
     return None  # timeout / no_phone / anything else -> fail open
 
 
+def send_notification(session_id, cwd, message):
+    """Fire-and-forget session-finished ping - unlike relay_approval, never
+    blocks waiting for a reply (there's nothing to wait on), so hooks that
+    call this return immediately. Any failure (no pairing, no daemon, phone
+    unreachable) is silently swallowed - same fail-open spirit as
+    relay_approval, just with no fallback branch for the caller to handle.
+    """
+    sock_path = spawn.ensure_running()
+    if not sock_path:
+        log(f"daemon not available for notify session={session_id}")
+        return
+
+    msg = protocol.build_local_notify(session_id, cwd, message)
+    try:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(2.0)
+        conn.connect(sock_path)
+        conn.sendall(protocol.encode(msg))
+        # Read (briefly) rather than closing straight away: the daemon's ack
+        # is near-instant for notify (it never waits on the phone), and
+        # reading it lets the daemon's own sendall() complete cleanly instead
+        # of hitting a closed pipe and logging a spurious error every time.
+        try:
+            conn.recv(256)
+        except OSError:
+            pass
+        conn.close()
+    except OSError as e:
+        log(f"notify socket connect/IO failed: {e!r}")
+
+
 def _relay_via_files(req_id, req):
     """Fallback for sandboxes that deny AF_UNIX connect().
 
