@@ -15,6 +15,7 @@ import com.phoneapprove.app.data.DaemonLinkManager
 import com.phoneapprove.app.data.PairingRepository
 import com.phoneapprove.app.data.SettingsRepository
 import com.phoneapprove.app.model.ApprovalRequest
+import com.phoneapprove.app.model.SessionNotify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -31,6 +32,14 @@ class ConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob())
     private val channelId = "phone_approve_connection"
     private val requestChannelId = "phone_approve_requests"
+    // "_v2": channel importance is locked in at first creation and
+    // createNotificationChannel() is a no-op afterward - an earlier debug
+    // build created "phone_approve_sessions" before it was set to
+    // IMPORTANCE_HIGH, so it silently stayed low (no heads-up alert) no
+    // matter what this code says. A fresh id guarantees HIGH actually
+    // takes effect instead of requiring everyone to fix it by hand in
+    // system settings.
+    private val sessionChannelId = "phone_approve_sessions_v2"
     private var notifiedReqIds: Set<String> = emptySet()
 
     override fun onCreate() {
@@ -59,6 +68,10 @@ class ConnectionService : Service() {
                     updateRequestNotifications(requests)
                 }
         }
+
+        scope.launch {
+            DaemonLinkManager.notifications.collect { notify -> postSessionNotification(notify) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -79,6 +92,9 @@ class ConnectionService : Service() {
         )
         manager.createNotificationChannel(
             NotificationChannel(requestChannelId, "Phone Approve requests", NotificationManager.IMPORTANCE_HIGH)
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(sessionChannelId, "Phone Approve session updates", NotificationManager.IMPORTANCE_HIGH)
         )
     }
 
@@ -146,6 +162,26 @@ class ConnectionService : Service() {
 
         val notification = builder.build()
         NotificationManagerCompat.from(this).notify(request.reqId.hashCode(), notification)
+    }
+
+    /** Posts a one-shot "session finished" alert. Unlike request notifications
+     * (which are cancelled once resolved and can overwrite each other via a
+     * per-req_id id), these carry no Allow/Deny power and nothing to resolve,
+     * so each gets its own id and is left to stack like a normal chat ping. */
+    private fun postSessionNotification(notify: SessionNotify) {
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, sessionChannelId)
+            .setContentTitle("${notify.deviceName} — session finished")
+            .setContentText(notify.message)
+            .setSubText(notify.cwd)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(this).notify("${notify.sessionId}_${notify.ts}".hashCode(), notification)
     }
 
     private fun actionPendingIntent(reqId: String, action: String, code: Int): PendingIntent {

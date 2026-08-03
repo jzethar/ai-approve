@@ -101,6 +101,9 @@ class Daemon:
         entry["event"].set()
 
     def handle_local_request(self, req):
+        if req.get("type") == "notify":
+            return self.handle_local_notify(req)
+
         req_id = req["req_id"]
         session_id = req["session_id"]
         tool_name = req["tool_name"]
@@ -126,6 +129,15 @@ class Daemon:
         if not got_it:
             return protocol.build_local_response("timeout", "no response from phone")
         return entry["result"]
+
+    def handle_local_notify(self, req):
+        """Fire-and-forget session-finished ping: best-effort forward to the
+        phone if connected, but never blocks waiting for it - there's no
+        Allow/Deny to wait on, unlike handle_local_request's approval flow."""
+        if self._link is not None and self._link.is_connected():
+            self._link.send(protocol.build_notify(
+                req["session_id"], req["cwd"], req["message"], time.time()))
+        return {"ok": True}
 
     def _serve_local(self):
         sock_path = protocol.daemon_sock_path()

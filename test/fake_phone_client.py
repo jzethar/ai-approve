@@ -47,6 +47,13 @@ def _reader_thread(conn):
                 f"respond with: allow / allow_always / deny / other <text>\n> ",
                 end="", flush=True,
             )
+        elif msg.get("type") == "notify":
+            print(
+                f"\n=== session notify ===\n"
+                f"session: {msg['session_id']}\n"
+                f"cwd:     {msg['cwd']}\n"
+                f"message: {msg['message']}\n"
+            )
 
 
 def main():

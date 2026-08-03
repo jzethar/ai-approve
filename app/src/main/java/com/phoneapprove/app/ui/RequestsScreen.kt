@@ -39,6 +39,7 @@ import com.phoneapprove.app.data.PairingInfo
 import com.phoneapprove.app.data.SettingsRepository
 import com.phoneapprove.app.data.ThemeMode
 import com.phoneapprove.app.model.ApprovalRequest
+import com.phoneapprove.app.model.SessionNotify
 
 @Composable
 fun RequestsScreen(
@@ -48,6 +49,7 @@ fun RequestsScreen(
 ) {
     val connectionStates by DaemonLinkManager.connectionStates.collectAsState()
     val requests by DaemonLinkManager.requests.collectAsState()
+    val sessionHistory by DaemonLinkManager.sessionHistory.collectAsState()
     var showDevices by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -69,13 +71,33 @@ fun RequestsScreen(
         }
         Spacer(modifier = Modifier.height(12.dp))
 
-        if (requests.isEmpty()) {
+        if (requests.isEmpty() && sessionHistory.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No pending approval requests.")
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(requests, key = { it.reqId }) { request -> RequestCard(request) }
+
+                if (sessionHistory.isNotEmpty()) {
+                    item(key = "session-history-header") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Recent sessions", style = MaterialTheme.typography.labelLarge)
+                            TextButton(onClick = { DaemonLinkManager.clearSessionHistory() }) {
+                                Text("Clear")
+                            }
+                        }
+                    }
+                    items(sessionHistory, key = { "${it.sessionId}_${it.ts}" }) { notify ->
+                        SessionCard(notify, onDismiss = {
+                            DaemonLinkManager.dismissSessionNotification(notify.sessionId, notify.ts)
+                        })
+                    }
+                }
             }
         }
     }
@@ -263,6 +285,36 @@ private fun RequestCard(request: ApprovalRequest) {
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                 ) {
                     Text("Deny")
+                }
+            }
+        }
+    }
+}
+
+/** Informational, not actionable like [RequestCard] - nothing to Allow/Deny
+ * here, just the last-reply snippet and a way to dismiss it from the list. */
+@Composable
+private fun SessionCard(notify: SessionNotify, onDismiss: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Session finished", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    notify.deviceName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+            Text(notify.cwd, style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(notify.message, style = MaterialTheme.typography.bodyMedium)
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = onDismiss) {
+                    Text("Dismiss")
                 }
             }
         }

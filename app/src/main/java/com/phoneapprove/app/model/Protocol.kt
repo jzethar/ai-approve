@@ -44,6 +44,15 @@ data class ResponseMessage(
     val reply: String? = null,
 )
 
+@Serializable
+data class NotifyMessage(
+    val type: String = "notify",
+    val session_id: String,
+    val cwd: String,
+    val message: String,
+    val ts: Double,
+)
+
 // encodeDefaults=true is required: HelloMessage/ResponseMessage's `type`
 // field has a default value ("hello"/"response"), and kotlinx.serialization
 // omits fields that equal their default unless told otherwise - confirmed
@@ -54,6 +63,7 @@ val protocolJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 sealed class IncomingMessage {
     data class Ack(val ok: Boolean) : IncomingMessage()
     data class Req(val message: RequestMessage) : IncomingMessage()
+    data class Notify(val message: NotifyMessage) : IncomingMessage()
     object Unknown : IncomingMessage()
 }
 
@@ -63,6 +73,7 @@ fun parseIncoming(line: String): IncomingMessage {
         when (obj["type"]?.jsonPrimitive?.contentOrNull) {
             "hello_ack" -> IncomingMessage.Ack(protocolJson.decodeFromJsonElement(HelloAckMessage.serializer(), obj).ok)
             "request" -> IncomingMessage.Req(protocolJson.decodeFromJsonElement(RequestMessage.serializer(), obj))
+            "notify" -> IncomingMessage.Notify(protocolJson.decodeFromJsonElement(NotifyMessage.serializer(), obj))
             else -> IncomingMessage.Unknown
         }
     } catch (e: Exception) {

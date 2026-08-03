@@ -53,6 +53,14 @@ of writing one more small adapter script - see `hooks/relay.py`.
   times out, the hook prints nothing and the agent falls back to its own
   normal terminal permission prompt - this fail-open behavior is
   non-negotiable, matching tg-approve's fallback design.
+- `hooks/stop_notify.py` (Claude Code) and `hooks/codex_stop_notify.py`
+  (Codex CLI) are a second, simpler kind of hook: instead of blocking on a
+  phone decision, they fire a fire-and-forget `notify` message
+  (`hooks/relay.py`'s `send_notification()`) whenever each agent's `Stop`
+  event fires, so the phone gets a plain "session finished" push with a
+  snippet of the last reply. They reuse the same pairing, daemon, and
+  encrypted link as approval requests, just without the Allow/Deny round
+  trip - the app shows it as a normal notification, not a request card.
 
 ## Setup
 
@@ -148,6 +156,28 @@ device" flow without losing the first pairing.
 Restart/reload your Claude Code session afterward - hook config isn't
 hot-reloaded mid-session.
 
+Optionally, also add `hooks/stop_notify.py` under **`Stop`** to get a
+plain push notification (with a snippet of Claude's last reply) whenever
+a turn finishes - no Allow/Deny involved, just an FYI ping:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/phone-ai-approve/hooks/stop_notify.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 **Codex CLI**: add the hook under **`PermissionRequest`** in
 `~/.codex/hooks.json` (or the equivalent inline `[hooks]` table in
 `~/.codex/config.toml`) - here, unlike Claude Code, `PermissionRequest` *is*
@@ -176,6 +206,35 @@ Codex prompts to explicitly trust a new non-managed hook the first time it
 runs (via its `/hooks` command) - accept that once. This adapter hasn't
 been verified against a real Codex install; see its docstring before
 relying on it.
+
+Optionally, also add `hooks/codex_stop_notify.py` under **`Stop`** to get
+the same "session finished" push as Claude Code. Codex's `Stop` event is
+decision-making (it can extend a turn), unlike Claude Code's, but this
+adapter only ever observes it - it prints nothing and exits 0, which Codex
+treats as fail-open/continue, so it never affects whether the turn
+actually stops:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/phone-ai-approve/hooks/codex_stop_notify.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Note `Stop` doesn't support `matcher` in Codex - any matcher there is
+ignored. This adapter is unverified against a real Codex install for the
+same reason as `codex_permission_hook.py` above.
 
 ## Requirements
 
@@ -215,8 +274,12 @@ normal AF_UNIX relay and `requests/` for sandboxed Codex hooks that need the
 file-relay fallback.
 
 **Linux/macOS side:**
-- `hooks/pretooluse_approve.py` - the Claude Code hook adapter.
-- `hooks/codex_permission_hook.py` - the Codex CLI hook adapter.
+- `hooks/pretooluse_approve.py` - the Claude Code `PreToolUse` hook adapter.
+- `hooks/stop_notify.py` - the Claude Code `Stop` hook adapter; sends a
+  fire-and-forget "session finished" push instead of an approval request.
+- `hooks/codex_permission_hook.py` - the Codex CLI `PermissionRequest` hook adapter.
+- `hooks/codex_stop_notify.py` - the Codex CLI `Stop` hook adapter; sends a
+  fire-and-forget "session finished" push instead of an approval request.
 - `hooks/relay.py` - shared daemon-relay logic both adapters call into.
 - `daemon/approve_daemon.py` - persistent daemon owning the phone link(s).
 - `daemon/phone_link.py` - `TcpPhoneLink`: accept loop, hello handshake, line-JSON read loop.
