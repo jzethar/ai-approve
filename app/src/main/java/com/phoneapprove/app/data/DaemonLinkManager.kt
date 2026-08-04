@@ -213,9 +213,17 @@ private class DeviceLink(
         threads += Thread {
             race(Transport.TCP, winner, tcpAttempt, btAttempt) { connectOnceTcp(tcpAttempt) }
         }
+        // BLE (macOS daemons) and classic RFCOMM (Linux daemons) are
+        // mutually exclusive in practice - a given daemon's pairing payload
+        // only ever carries one or the other, see PairingInfo - but both
+        // report as Transport.BLUETOOTH to the UI either way.
         val btMac = pairing.btMac
         val btChannelNum = pairing.btChannel
-        if (btMac != null && btChannelNum != null) {
+        if (pairing.bleAvailable) {
+            threads += Thread {
+                race(Transport.BLUETOOTH, winner, btAttempt, tcpAttempt) { connectOnceBle(btAttempt) }
+            }
+        } else if (btMac != null && btChannelNum != null) {
             threads += Thread {
                 race(Transport.BLUETOOTH, winner, btAttempt, tcpAttempt) { connectOnceBt(btMac, btChannelNum, btAttempt) }
             }
@@ -281,6 +289,11 @@ private class DeviceLink(
         val socket: BluetoothSocket = BluetoothRfcomm.createFixedChannelSocket(device, btChannelNum)
         attempt.set(socket)
         socket.connect()
+        return handshake(socket.inputStream, socket.outputStream)
+    }
+
+    private fun connectOnceBle(attempt: AtomicReference<Closeable?>): SecureChannel? {
+        val socket = BluetoothLeClient.connect(context, attempt) ?: return null
         return handshake(socket.inputStream, socket.outputStream)
     }
 

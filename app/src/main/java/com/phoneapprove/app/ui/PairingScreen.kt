@@ -45,6 +45,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.phoneapprove.app.data.BluetoothLeClient
 import com.phoneapprove.app.data.BluetoothRfcomm
 import com.phoneapprove.app.data.PairingInfo
 import com.phoneapprove.app.data.toPairingInfo
@@ -84,13 +85,18 @@ fun PairingScreen(onPaired: (PairingInfo) -> Unit, canCancel: Boolean = false, o
     // tone as the daemon's own "no LAN IP found" pairing.py warning.
     var pendingBtBonding by remember { mutableStateOf<QrPairingPayload?>(null) }
 
-    var hasBtPermission by remember { mutableStateOf(BluetoothRfcomm.hasRuntimePermission(context)) }
+    // hasScanPermission() checks both BLUETOOTH_SCAN and BLUETOOTH_CONNECT
+    // (a strict superset of BluetoothRfcomm's CONNECT-only check), so it
+    // alone tells us whether either transport - classic RFCOMM or BLE - is
+    // clear to use; which one a given pairing actually needs isn't known
+    // yet at this point in the flow.
+    var hasBtPermission by remember { mutableStateOf(BluetoothLeClient.hasScanPermission(context)) }
     val btPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> hasBtPermission = granted }
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results -> hasBtPermission = results.values.all { it } }
     LaunchedEffect(Unit) {
         if (!hasBtPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            btPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN))
         }
     }
 

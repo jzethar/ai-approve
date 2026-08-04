@@ -1,11 +1,14 @@
 """PhoneLink: owns the long-lived connection(s) to the paired phone.
 
 TcpPhoneLink listens on a plain TCP socket bound to all interfaces, so a
-phone on the same local network can connect in. Bluetooth RFCOMM
-(LinuxBtPhoneLink here, bt_backend_macos.MacBtPhoneLink on macOS) runs
-alongside it as a second transport - not a replacement - so a phone that's
-nearby but off the LAN (or vice versa) still gets through. Only one of
-these links is ever "live" for a pairing at a time; see TransportArbiter.
+phone on the same local network can connect in. Bluetooth runs alongside it
+as a second transport - not a replacement - so a phone that's nearby but off
+the LAN (or vice versa) still gets through. On Linux this is classic RFCOMM
+(LinuxBtPhoneLink here); on macOS it's a BLE peripheral/GATT server instead
+(bt_backend_macos.MacBtPhoneLink), since classic RFCOMM server mode isn't
+reliably available to third-party apps there - see that module for why. Only
+one of these links is ever "live" for a pairing at a time; see
+TransportArbiter.
 
 Every connection is wrapped in secure_channel.EncryptedConn immediately
 after accept() - see that module for why: neither TCP nor RFCOMM (once
@@ -286,7 +289,7 @@ def make_bt_phone_link(get_token, channel, on_message, on_connect=None, on_disco
             import bt_backend_macos
         except ImportError as e:
             log(f"Bluetooth unavailable on macOS: {e!r} "
-                f"(pip install 'pyobjc-framework-IOBluetooth' to enable it)")
+                f"(pip install 'pyobjc-framework-CoreBluetooth' to enable it)")
             return None
         try:
             return bt_backend_macos.MacBtPhoneLink(**kwargs)

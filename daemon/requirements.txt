@@ -1,2 +1,2 @@
 cryptography>=41
-pyobjc-framework-IOBluetooth>=10 ; sys_platform == 'darwin'
+pyobjc-framework-CoreBluetooth>=10 ; sys_platform == 'darwin'

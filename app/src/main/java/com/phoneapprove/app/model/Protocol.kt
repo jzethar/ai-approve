@@ -19,10 +19,25 @@ data class QrPairingPayload(
     val name: String,
     // Optional: absent (null) when the daemon had no usable Bluetooth adapter
     // at pairing time, in which case this pairing is TCP-only. Both default
-    // to null so a v3 (TCP-only) payload still parses fine here.
+    // to null so a v3 (TCP-only) payload still parses fine here. Classic-
+    // RFCOMM-only (a Linux daemon); a macOS daemon sets bt_le instead (see
+    // below), never these two.
     val bt_mac: String? = null,
     val bt_channel: Int? = null,
+    // True when the daemon is macOS and runs a BLE peripheral/GATT server
+    // (see daemon/bt_backend_macos.py) rather than classic RFCOMM - classic
+    // RFCOMM server mode isn't reliably available to third-party apps on
+    // macOS. Defaults to false so a pre-v5 payload still parses fine here.
+    val bt_le: Boolean = false,
 )
+
+/** Mirrors daemon/protocol.py's BT_LE_* constants - fixed GATT UUIDs for the
+ * macOS BLE transport, see BluetoothLeClient.kt. */
+object BleUuids {
+    const val SERVICE = "7f3a2b1a-0001-4c7a-9c1f-6f3f2b6a8e11"
+    const val RX_CHARACTERISTIC = "7f3a2b1a-0002-4c7a-9c1f-6f3f2b6a8e11" // phone -> daemon (write)
+    const val TX_CHARACTERISTIC = "7f3a2b1a-0003-4c7a-9c1f-6f3f2b6a8e11" // daemon -> phone (notify)
+}
 
 @Serializable
 data class HelloMessage(val type: String = "hello", val tok: String)

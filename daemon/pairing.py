@@ -168,6 +168,14 @@ def generate_pairing(port=DEFAULT_PORT, name=None, host=None):
             "adapter is available.",
             file=sys.stderr,
         )
+    elif sys.platform == "darwin":
+        # macOS runs a BLE peripheral/GATT server rather than classic RFCOMM
+        # (see daemon/bt_backend_macos.py) - it doesn't need bt_mac/bt_channel
+        # at all, since BLE central-side discovery is by service UUID (a
+        # fixed constant, see protocol.BT_LE_SERVICE_UUID), not device
+        # address. bt_mac's mere presence above is reused only as the
+        # "there's a usable Bluetooth controller" signal.
+        payload["bt_le"] = True
     else:
         payload["bt_mac"] = bt_mac
         payload["bt_channel"] = protocol.BT_CHANNEL
