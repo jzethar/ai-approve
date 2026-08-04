@@ -33,11 +33,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import com.phoneapprove.app.data.BluetoothRfcomm
 import com.phoneapprove.app.data.ConnectionState
 import com.phoneapprove.app.data.DaemonLinkManager
 import com.phoneapprove.app.data.PairingInfo
 import com.phoneapprove.app.data.SettingsRepository
 import com.phoneapprove.app.data.ThemeMode
+import com.phoneapprove.app.data.Transport
 import com.phoneapprove.app.model.ApprovalRequest
 import com.phoneapprove.app.model.SessionNotify
 
@@ -48,6 +50,7 @@ fun RequestsScreen(
     onForgetDevice: (String) -> Unit,
 ) {
     val connectionStates by DaemonLinkManager.connectionStates.collectAsState()
+    val activeTransports by DaemonLinkManager.activeTransports.collectAsState()
     val requests by DaemonLinkManager.requests.collectAsState()
     val sessionHistory by DaemonLinkManager.sessionHistory.collectAsState()
     var showDevices by remember { mutableStateOf(false) }
@@ -59,7 +62,7 @@ fun RequestsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ConnectionSummary(pairings, connectionStates)
+            ConnectionSummary(pairings, connectionStates, activeTransports)
             Row {
                 TextButton(onClick = { showSettings = true }) {
                     Text("Settings")
@@ -106,6 +109,7 @@ fun RequestsScreen(
         DevicesDialog(
             pairings = pairings,
             connectionStates = connectionStates,
+            activeTransports = activeTransports,
             onAddDevice = {
                 showDevices = false
                 onAddDevice()
@@ -121,9 +125,13 @@ fun RequestsScreen(
 }
 
 @Composable
-private fun ConnectionSummary(pairings: List<PairingInfo>, states: Map<String, ConnectionState>) {
+private fun ConnectionSummary(
+    pairings: List<PairingInfo>,
+    states: Map<String, ConnectionState>,
+    transports: Map<String, Transport>,
+) {
     if (pairings.size == 1) {
-        ConnectionBadge(states[pairings[0].id] ?: ConnectionState.DISCONNECTED)
+        ConnectionBadge(states[pairings[0].id] ?: ConnectionState.DISCONNECTED, transports[pairings[0].id])
         return
     }
     val connected = pairings.count { states[it.id] == ConnectionState.CONNECTED }
@@ -140,10 +148,12 @@ private fun ConnectionSummary(pairings: List<PairingInfo>, states: Map<String, C
 private fun DevicesDialog(
     pairings: List<PairingInfo>,
     connectionStates: Map<String, ConnectionState>,
+    activeTransports: Map<String, Transport>,
     onAddDevice: () -> Unit,
     onForgetDevice: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Devices") },
@@ -159,8 +169,20 @@ private fun DevicesDialog(
                             Text(pairing.name.ifBlank { pairing.host })
                             ConnectionBadge(
                                 connectionStates[pairing.id] ?: ConnectionState.DISCONNECTED,
+                                activeTransports[pairing.id],
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            // Bonding can be revoked (or never done) after pairing - a live,
+                            // separate check from ConnectionBadge above, since a device can be
+                            // CONNECTED (via TCP) while still not bonded for Bluetooth.
+                            val btMac = pairing.btMac
+                            if (btMac != null && !BluetoothRfcomm.isBonded(context, btMac)) {
+                                Text(
+                                    "Bluetooth: not bonded",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                )
+                            }
                         }
                         TextButton(onClick = { onForgetDevice(pairing.id) }) { Text("Forget") }
                     }
@@ -244,12 +266,19 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
 @Composable
 private fun ConnectionBadge(
     state: ConnectionState,
+    transport: Transport? = null,
     style: TextStyle = MaterialTheme.typography.labelLarge,
 ) {
-    val (text, color) = when (state) {
+    val (label, color) = when (state) {
         ConnectionState.CONNECTED -> "Connected" to MaterialTheme.colorScheme.primary
         ConnectionState.CONNECTING -> "Connecting..." to MaterialTheme.colorScheme.tertiary
         ConnectionState.DISCONNECTED -> "Not connected" to MaterialTheme.colorScheme.error
+    }
+    val text = if (state == ConnectionState.CONNECTED && transport != null) {
+        val via = if (transport == Transport.BLUETOOTH) "Bluetooth" else "TCP"
+        "$label (via $via)"
+    } else {
+        label
     }
     Text(text, color = color, style = style)
 }

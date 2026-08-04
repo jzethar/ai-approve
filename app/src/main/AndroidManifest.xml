@@ -6,8 +6,17 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Bluetooth RFCOMM transport, alongside TCP. We only ever connect to a
+         device already bonded via the OS Bluetooth settings (see
+         BluetoothRfcomm.kt) - never scan/discover - so BLUETOOTH_SCAN and the
+         location permission it implies on older APIs are not needed. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <!-- required="false": TCP must keep working standalone on Bluetooth-less devices. -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <application
         android:allowBackup="true"

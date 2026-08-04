@@ -16,11 +16,6 @@ nothing and always exits 0.
 Codex's Stop payload includes `last_assistant_message` directly, same as
 Claude Code's own Stop event (see hooks/stop_notify.py) - so no transcript
 reading needed here.
-
-NOTE: built from Codex's documented hook JSON schema, not verified against
-a live Codex CLI install (not available in the environment this was
-developed in) - test this for real before relying on it, same caveat as
-hooks/codex_permission_hook.py.
 """
 import json
 import os
@@ -28,6 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from relay import send_notification  # noqa: E402
+from relay import log  # noqa: E402
 
 SNIPPET_LEN = 200
 
@@ -46,6 +42,7 @@ def main():
     else:
         message = f"Finished responding in {cwd}" if cwd else "Finished responding"
 
+    log(f"codex Stop received session={session_id}")
     send_notification(session_id, cwd, message)
 
 

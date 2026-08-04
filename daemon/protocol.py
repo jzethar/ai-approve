@@ -29,10 +29,25 @@ import os
 # in the clear. An old plaintext-only app/daemon talking to a new encrypted
 # one fails the handshake outright (it never sends/expects the initial kex
 # message), rather than silently working unencrypted.
-PROTOCOL_VERSION = 3
+#
+# v4: Bluetooth RFCOMM is back as a second transport, running alongside TCP
+# rather than replacing it (see daemon/phone_link.py) - the pairing payload
+# now optionally carries bt_mac/bt_channel so the phone can race a Bluetooth
+# connection attempt against the TCP one and use whichever completes its
+# handshake first. Both new fields are optional/additive (unlike the v1->v2
+# rename), so a v3 app or daemon still talks TCP-only with a v4 peer.
+PROTOCOL_VERSION = 4
 TOOL_INPUT_TRUNCATE = 1200
 STATE_DIR_NAME = ".phone-ai-approve"
 RUNTIME_DIR_NAME = "phone-ai-approve"
+
+# Fixed RFCOMM channel the daemon's Bluetooth listener binds to and the app
+# connects to directly (by channel number, not SDP lookup) - see
+# daemon/phone_link.py's LinuxBtPhoneLink and daemon/bt_backend_macos.py for
+# why a fixed channel sidesteps needing a full SDP server on Linux. Kept here
+# as the single source of truth so payload generation (pairing.py) and the
+# actual bind/publish (phone_link.py / bt_backend_macos.py) never drift apart.
+BT_CHANNEL = 4
 
 # Actions a phone response (or a local daemon->hook response) may carry.
 PHONE_ACTIONS = {"allow", "allow_always", "deny", "other"}

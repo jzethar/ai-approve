@@ -53,7 +53,7 @@ class ConnectionService : Service() {
         // fresh connection against the one that's already up.
         for (pairing in PairingRepository(applicationContext).loadAll()) {
             if (!DaemonLinkManager.isManaging(pairing.id)) {
-                DaemonLinkManager.start(pairing)
+                DaemonLinkManager.start(applicationContext, pairing)
             }
         }
 

@@ -1,7 +1,10 @@
 package com.phoneapprove.app.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -19,12 +22,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,8 +43,12 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.phoneapprove.app.data.BluetoothRfcomm
 import com.phoneapprove.app.data.PairingInfo
 import com.phoneapprove.app.data.toPairingInfo
+import com.phoneapprove.app.model.QrPairingPayload
 import com.phoneapprove.app.model.parseQrPayload
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -67,6 +77,28 @@ fun PairingScreen(onPaired: (PairingInfo) -> Unit, canCancel: Boolean = false, o
     var manualCode by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var applied by remember { mutableStateOf(false) }
+    // Set instead of calling onPaired() directly when the payload carries
+    // Bluetooth info this phone isn't bonded with yet - see the advisory
+    // card below. Pairing itself (TCP) is never blocked on this; it's just
+    // a one-tap "you might want to bond first" heads-up, same non-blocking
+    // tone as the daemon's own "no LAN IP found" pairing.py warning.
+    var pendingBtBonding by remember { mutableStateOf<QrPairingPayload?>(null) }
+
+    var hasBtPermission by remember { mutableStateOf(BluetoothRfcomm.hasRuntimePermission(context)) }
+    val btPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasBtPermission = granted }
+    LaunchedEffect(Unit) {
+        if (!hasBtPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
+
+    fun completePairing(payload: QrPairingPayload) {
+        applied = true
+        pendingBtBonding = null
+        onPaired(payload.toPairingInfo())
+    }
 
     fun tryApply(text: String) {
         if (applied) return
@@ -76,8 +108,29 @@ fun PairingScreen(onPaired: (PairingInfo) -> Unit, canCancel: Boolean = false, o
             return
         }
         error = null
-        applied = true
-        onPaired(payload.toPairingInfo())
+        val btMac = payload.bt_mac
+        if (btMac != null && !BluetoothRfcomm.isBonded(context, btMac)) {
+            pendingBtBonding = payload
+        } else {
+            completePairing(payload)
+        }
+    }
+
+    // Re-checks bonding whenever the user comes back from Bluetooth settings
+    // (a plain Compose state change, e.g. leaving this screen, doesn't
+    // trigger this - only a real Activity lifecycle event does), so bonding
+    // there and returning here auto-continues without another QR scan.
+    DisposableEffect(lifecycleOwner, pendingBtBonding) {
+        val payload = pendingBtBonding
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && payload != null &&
+                BluetoothRfcomm.isBonded(context, payload.bt_mac!!)
+            ) {
+                completePairing(payload)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -176,6 +229,46 @@ fun PairingScreen(onPaired: (PairingInfo) -> Unit, canCancel: Boolean = false, o
         error?.let {
             Spacer(modifier = Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error)
+        }
+        pendingBtBonding?.let { payload ->
+            Spacer(modifier = Modifier.height(16.dp))
+            BluetoothBondingHint(
+                computerName = payload.name,
+                onOpenSettings = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                },
+                onContinueWithoutBluetooth = { completePairing(payload) },
+            )
+        }
+    }
+}
+
+/** Non-blocking advisory shown when the scanned/pasted pairing payload
+ * carries Bluetooth info this phone isn't bonded with yet. Bluetooth is a
+ * bonus transport, not a requirement - TCP already works either way - so
+ * this never stops the user from finishing pairing right now. */
+@Composable
+private fun BluetoothBondingHint(
+    computerName: String,
+    onOpenSettings: () -> Unit,
+    onContinueWithoutBluetooth: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                "For Bluetooth to work with \"$computerName\", bond this phone with it " +
+                    "first via Bluetooth settings. Pairing works over Wi-Fi either way - " +
+                    "this is optional.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row {
+                TextButton(onClick = onOpenSettings) { Text("Open Bluetooth settings") }
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(onClick = onContinueWithoutBluetooth) { Text("Continue") }
+            }
         }
     }
 }

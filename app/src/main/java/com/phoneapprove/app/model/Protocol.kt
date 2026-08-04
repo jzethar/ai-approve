@@ -17,6 +17,11 @@ data class QrPairingPayload(
     val port: Int,
     val tok: String,
     val name: String,
+    // Optional: absent (null) when the daemon had no usable Bluetooth adapter
+    // at pairing time, in which case this pairing is TCP-only. Both default
+    // to null so a v3 (TCP-only) payload still parses fine here.
+    val bt_mac: String? = null,
+    val bt_channel: Int? = null,
 )
 
 @Serializable

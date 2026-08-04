@@ -9,9 +9,14 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 @Serializable
-data class PairingInfo(val id: String, val host: String, val port: Int, val token: String, val name: String)
+data class PairingInfo(
+    val id: String, val host: String, val port: Int, val token: String, val name: String,
+    // Optional: null means this pairing is TCP-only (the daemon had no usable
+    // Bluetooth adapter when it was paired) - see QrPairingPayload.
+    val btMac: String? = null, val btChannel: Int? = null,
+)
 
-fun QrPairingPayload.toPairingInfo() = PairingInfo(id, host, port, tok, name)
+fun QrPairingPayload.toPairingInfo() = PairingInfo(id, host, port, tok, name, bt_mac, bt_channel)
 
 private val json = Json { ignoreUnknownKeys = true }
 private val pairingListSerializer = ListSerializer(PairingInfo.serializer())
