@@ -54,6 +54,10 @@ data class RequestMessage(
     val tool_input: String,
     val cwd: String,
     val ts: Double,
+    // Present only for a proposed-answer tool (Claude Code's AskUserQuestion -
+    // see hooks/pretooluse_approve.py's _question()); null for every ordinary
+    // tool call, which keeps showing the plain Allow/Allow always/Deny row.
+    val options: List<String>? = null,
 )
 
 @Serializable

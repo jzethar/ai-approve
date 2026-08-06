@@ -63,6 +63,20 @@ of writing one more small adapter script - see `hooks/relay.py`.
   (`ConnectionService`) keeps all connections alive in the background; an
   optional (off by default) setting lets you respond straight from the
   notification instead of opening the app.
+- Claude Code's `AskUserQuestion` tool is a special case: it's a proposed-
+  answer question, not a permission decision, so none of Allow / Allow
+  always / Deny is a real response to it. `hooks/pretooluse_approve.py`
+  detects that tool by name and pulls the proposed answers out of its
+  `tool_input`, and the card shows those as its own buttons instead - tapping
+  one is sent back over the existing free-text "other" phone action (the
+  chosen label as the reply), which resolves to a `deny` decision whose
+  reason is that reply, exactly like a typed answer already does. Only the
+  single-question, single-select shape is handled this way; a call with
+  several questions or `multiSelect` falls back to the plain tool_input dump
+  and a typed reply, since one tap can't represent that whole answer. Codex
+  has no equivalent as of writing - its `PermissionRequest` hook only ever
+  fires for shell/`apply_patch`/MCP tool calls, never a question - so
+  `hooks/codex_permission_hook.py` has nothing to detect here.
 - If there's no pairing, no daemon, the phone isn't connected, or anything
   times out, the hook prints nothing and the agent falls back to its own
   normal terminal permission prompt - this fail-open behavior is

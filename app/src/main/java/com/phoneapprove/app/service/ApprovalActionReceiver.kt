@@ -15,12 +15,17 @@ class ApprovalActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val reqId = intent.getStringExtra(EXTRA_REQ_ID) ?: return
         val action = intent.getStringExtra(EXTRA_ACTION) ?: return
-        DaemonLinkManager.respond(reqId, action)
+        val reply = intent.getStringExtra(EXTRA_REPLY)
+        DaemonLinkManager.respond(reqId, action, reply)
         NotificationManagerCompat.from(context).cancel(reqId.hashCode())
     }
 
     companion object {
         const val EXTRA_REQ_ID = "req_id"
         const val EXTRA_ACTION = "action"
+        // Set only for a proposed-answer tap (see ConnectionService's options
+        // branch) - the chosen option's label, forwarded as the phone's "other"
+        // free-text reply so it resolves exactly like a typed answer would.
+        const val EXTRA_REPLY = "reply"
     }
 }
