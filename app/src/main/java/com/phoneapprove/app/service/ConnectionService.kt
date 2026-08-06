@@ -154,10 +154,26 @@ class ConnectionService : Service() {
             .setAutoCancel(true)
 
         if (SettingsRepository(applicationContext).notificationActionsEnabled()) {
-            builder
-                .addAction(0, "Allow", actionPendingIntent(request.reqId, "allow", 0))
-                .addAction(0, "Allow always", actionPendingIntent(request.reqId, "allow_always", 1))
-                .addAction(0, "Deny", actionPendingIntent(request.reqId, "deny", 2))
+            val options = request.options
+            if (options != null && options.isNotEmpty()) {
+                // A proposed-answer tool (e.g. AskUserQuestion): Allow/Allow
+                // always/Deny don't correspond to any real answer, so offer
+                // its own options instead - same "other" reply path RequestCard
+                // uses in-app. A heads-up notification only ever surfaces
+                // ~3 actions, so beyond that just skip inline actions (the
+                // notification itself still alerts) and require opening the
+                // app, where every option is always listed regardless of count.
+                if (options.size <= MAX_NOTIFICATION_OPTIONS) {
+                    options.forEachIndexed { i, option ->
+                        builder.addAction(0, option, actionPendingIntent(request.reqId, "other", i, reply = option))
+                    }
+                }
+            } else {
+                builder
+                    .addAction(0, "Allow", actionPendingIntent(request.reqId, "allow", 0))
+                    .addAction(0, "Allow always", actionPendingIntent(request.reqId, "allow_always", 1))
+                    .addAction(0, "Deny", actionPendingIntent(request.reqId, "deny", 2))
+            }
         }
 
         val notification = builder.build()
@@ -184,10 +200,11 @@ class ConnectionService : Service() {
         NotificationManagerCompat.from(this).notify("${notify.sessionId}_${notify.ts}".hashCode(), notification)
     }
 
-    private fun actionPendingIntent(reqId: String, action: String, code: Int): PendingIntent {
+    private fun actionPendingIntent(reqId: String, action: String, code: Int, reply: String? = null): PendingIntent {
         val intent = Intent(this, ApprovalActionReceiver::class.java).apply {
             putExtra(ApprovalActionReceiver.EXTRA_REQ_ID, reqId)
             putExtra(ApprovalActionReceiver.EXTRA_ACTION, action)
+            if (reply != null) putExtra(ApprovalActionReceiver.EXTRA_REPLY, reply)
         }
         return PendingIntent.getBroadcast(
             this, reqId.hashCode() * 10 + code, intent,
@@ -197,5 +214,10 @@ class ConnectionService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
+        // Heads-up notifications reliably render about 3 action buttons across
+        // stock Android/OEM skins - beyond that, inline actions get silently
+        // dropped or the notification gets crowded, so past this count it's
+        // better to show none and send the person into the app instead.
+        private const val MAX_NOTIFICATION_OPTIONS = 3
     }
 }

@@ -363,6 +363,7 @@ private class DeviceLink(
         ts = m.ts,
         deviceId = pairing.id,
         deviceName = pairing.name,
+        options = m.options,
     )
 
     private fun toSessionNotify(m: NotifyMessage) = SessionNotify(

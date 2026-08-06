@@ -29,7 +29,7 @@ def log(msg):
         pass
 
 
-def relay_approval(tool_name, tool_input, session_id, cwd):
+def relay_approval(tool_name, tool_input, session_id, cwd, options=None):
     """Blocks until the phone answers (or a session-allow marker short-
     circuits it). Returns ("allow"|"deny", reason), or None if the caller
     should fail open instead - no pairing, no daemon, phone unreachable,
@@ -37,6 +37,15 @@ def relay_approval(tool_name, tool_input, session_id, cwd):
     every adapter script has exactly one fallback branch to implement
     (mirroring their own agent's "let the normal approval prompt continue"
     contract).
+
+    `options`, when given, is a list of proposed-answer labels (e.g. from
+    Claude Code's AskUserQuestion tool - see pretooluse_approve.py) that the
+    phone should offer as buttons instead of the default Allow/Allow always/
+    Deny, since none of those three is a real answer to a question. Tapping
+    one comes back as the existing "other" phone action (free-text reply)
+    with that label as the reply, which resolves to a "deny" decision whose
+    reason is the chosen answer - same mechanism a typed reply already uses,
+    just pre-filled instead of requiring the phone's keyboard.
     """
     if session_allow.is_allowed(session_id, tool_name):
         return "allow", "Auto-approved via phone (Allow always, this session)"
@@ -47,7 +56,7 @@ def relay_approval(tool_name, tool_input, session_id, cwd):
         return None
 
     req_id = f"{int(time.time() * 1e9)}_{os.getpid()}"
-    req = protocol.build_local_request(req_id, session_id, tool_name, tool_input, cwd)
+    req = protocol.build_local_request(req_id, session_id, tool_name, tool_input, cwd, options=options)
 
     try:
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

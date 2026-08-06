@@ -140,7 +140,8 @@ class Daemon:
             self._pending[req_id] = entry
 
         sent = link.send(protocol.build_request(
-            req_id, session_id, tool_name, req["tool_input"], req["cwd"], time.time()))
+            req_id, session_id, tool_name, req["tool_input"], req["cwd"], time.time(),
+            options=req.get("options")))
         if not sent:
             with self._pending_lock:
                 self._pending.pop(req_id, None)

@@ -9,4 +9,7 @@ data class ApprovalRequest(
     val ts: Double,
     val deviceId: String,
     val deviceName: String,
+    // Proposed answers for a question tool (see RequestMessage.options) - when
+    // present, the UI offers these as buttons instead of Allow/Allow always/Deny.
+    val options: List<String>? = null,
 )

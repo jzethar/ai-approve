@@ -302,18 +302,38 @@ private fun RequestCard(request: ApprovalRequest) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(request.toolInput, style = MaterialTheme.typography.bodyMedium)
             Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { DaemonLinkManager.respond(request.reqId, "allow") }) {
-                    Text("Allow")
+            val options = request.options
+            if (options != null && options.isNotEmpty()) {
+                // A proposed-answer tool (e.g. AskUserQuestion) - none of
+                // Allow/Allow always/Deny is a real answer, so offer its own
+                // options instead. Sent back as the existing free-text "other"
+                // phone action with the tapped label as the reply; the daemon
+                // already turns that into a "deny" decision whose reason is
+                // the reply, exactly like a typed answer would.
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (option in options) {
+                        Button(
+                            onClick = { DaemonLinkManager.respond(request.reqId, "other", option) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(option)
+                        }
+                    }
                 }
-                Button(onClick = { DaemonLinkManager.respond(request.reqId, "allow_always") }) {
-                    Text("Allow always")
-                }
-                Button(
-                    onClick = { DaemonLinkManager.respond(request.reqId, "deny") },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) {
-                    Text("Deny")
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { DaemonLinkManager.respond(request.reqId, "allow") }) {
+                        Text("Allow")
+                    }
+                    Button(onClick = { DaemonLinkManager.respond(request.reqId, "allow_always") }) {
+                        Text("Allow always")
+                    }
+                    Button(
+                        onClick = { DaemonLinkManager.respond(request.reqId, "deny") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    ) {
+                        Text("Deny")
+                    }
                 }
             }
         }

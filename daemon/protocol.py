@@ -136,8 +136,8 @@ def build_hello_ack(ok: bool) -> dict:
     return {"type": "hello_ack", "ok": ok}
 
 
-def build_request(req_id, session_id, tool_name, tool_input, cwd, ts) -> dict:
-    return {
+def build_request(req_id, session_id, tool_name, tool_input, cwd, ts, options=None) -> dict:
+    msg = {
         "type": "request",
         "req_id": req_id,
         "session_id": session_id,
@@ -146,6 +146,15 @@ def build_request(req_id, session_id, tool_name, tool_input, cwd, ts) -> dict:
         "cwd": cwd,
         "ts": ts,
     }
+    # Additive, like bt_mac/bt_channel on the pairing payload: a proposed-answer
+    # tool (Claude Code's AskUserQuestion; see hooks/pretooluse_approve.py) sets
+    # this so the phone can offer the actual choices as buttons instead of a
+    # generic Allow/Allow always/Deny that doesn't correspond to any real answer.
+    # Omitted (not just null) for every ordinary tool call, so an old app build
+    # that doesn't know this field still renders those requests exactly as before.
+    if options:
+        msg["options"] = options
+    return msg
 
 
 def build_phone_response(req_id, action, reply=None) -> dict:
@@ -169,8 +178,8 @@ def build_notify(session_id, cwd, message, ts) -> dict:
 
 # ---- Local AF_UNIX messages (hook <-> daemon) ----
 
-def build_local_request(req_id, session_id, tool_name, tool_input, cwd) -> dict:
-    return {
+def build_local_request(req_id, session_id, tool_name, tool_input, cwd, options=None) -> dict:
+    msg = {
         "type": "request",
         "req_id": req_id,
         "session_id": session_id,
@@ -178,6 +187,9 @@ def build_local_request(req_id, session_id, tool_name, tool_input, cwd) -> dict:
         "tool_input": tool_input,
         "cwd": cwd,
     }
+    if options:
+        msg["options"] = options
+    return msg
 
 
 def build_local_notify(session_id, cwd, message) -> dict:
