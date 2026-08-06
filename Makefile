@@ -9,7 +9,7 @@ help:
 	@echo "  make pair          generate a pairing token/QR in the terminal (daemon/pairing.py)"
 	@echo "  make pair-web      same, but serves the QR at http://127.0.0.1:\$$(PORT) (PORT=... to override)"
 	@echo "  make daemon        run the approval daemon in the foreground"
-	@echo "  make service-install install/start the daemon as a systemd user service"
+	@echo "  make service-install install/start the daemon as a user service (launchd on macOS, systemd on Linux)"
 	@echo "  make service-status show the daemon user-service status"
 	@echo "  make service-logs  tail the daemon user-service logs"
 	@echo "  make stop          kill a running daemon"
@@ -33,17 +33,17 @@ service-install:
 	sh scripts/install-user-service.sh
 
 service-restart:
-	systemctl --user restart phone-ai-approve.service
+	sh scripts/service-ctl.sh restart
 
 service-status:
-	systemctl --user status phone-ai-approve.service
+	sh scripts/service-ctl.sh status
 
 service-logs:
-	journalctl --user -u phone-ai-approve.service -f
+	sh scripts/service-ctl.sh logs
 
 stop:
 	pkill -f 'daemon/approve_daemon.py' || true
-	systemctl --user stop phone-ai-approve.service || true
+	sh scripts/service-ctl.sh stop
 
 test-client:
 	python3 test/fake_phone_client.py

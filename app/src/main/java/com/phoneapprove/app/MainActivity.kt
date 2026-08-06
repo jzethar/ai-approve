@@ -65,7 +65,7 @@ class MainActivity : ComponentActivity() {
                             onPaired = { info ->
                                 pairingRepo.save(info)
                                 pairings = pairingRepo.loadAll()
-                                DaemonLinkManager.start(info)
+                                DaemonLinkManager.start(applicationContext, info)
                                 startConnectionService()
                                 showPairingScreen = false
                             },

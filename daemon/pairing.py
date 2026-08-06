@@ -78,6 +78,57 @@ def local_lan_ip():
             return "127.0.0.1"
 
 
+def local_bt_mac_address():
+    """Best-effort local Bluetooth adapter address, or None if there isn't
+    one / it can't be determined - callers should treat None as "omit
+    Bluetooth from the pairing payload", not as an error, exactly like
+    local_lan_ip() falling back to 127.0.0.1 above.
+
+    Linux: /sys/class/bluetooth/hci0/address is the standard BlueZ-managed
+    sysfs attribute for the first adapter - no subprocess/D-Bus needed for
+    the common case. Falls back to parsing `bluetoothctl show`, same
+    defensive subprocess pattern as _linux_lan_candidates() above, for
+    machines where hci0 isn't the adapter name.
+
+    macOS: goes through IOBluetooth (the same optional dependency the
+    daemon's Bluetooth listener itself needs - see bt_backend_macos.py),
+    so a missing/unpowered adapter or missing pyobjc install both just
+    fall through to None here.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/sys/class/bluetooth/hci0/address") as f:
+                addr = f.read().strip()
+            if addr:
+                return addr
+        except OSError:
+            pass
+        try:
+            out = subprocess.run(
+                ["bluetoothctl", "show"], capture_output=True, text=True, timeout=2,
+            ).stdout
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("Controller "):
+                    return line.split()[1]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return None
+
+    if sys.platform == "darwin":
+        try:
+            from IOBluetooth import IOBluetoothHostController
+        except ImportError:
+            return None
+        try:
+            controller = IOBluetoothHostController.defaultController()
+            return controller.addressAsString() if controller else None
+        except Exception:
+            return None
+
+    return None
+
+
 def pairing_path():
     return os.path.join(protocol.state_dir(), "pairing.json")
 
@@ -109,6 +160,25 @@ def generate_pairing(port=DEFAULT_PORT, name=None, host=None):
         "tok": secrets.token_hex(16),
         "name": name or socket.gethostname(),
     }
+    bt_mac = local_bt_mac_address()
+    if bt_mac is None:
+        print(
+            "warning: no Bluetooth adapter found (or it's off) - the pairing code will "
+            "be TCP-only; Bluetooth can still work later if you pair again once an "
+            "adapter is available.",
+            file=sys.stderr,
+        )
+    elif sys.platform == "darwin":
+        # macOS runs a BLE peripheral/GATT server rather than classic RFCOMM
+        # (see daemon/bt_backend_macos.py) - it doesn't need bt_mac/bt_channel
+        # at all, since BLE central-side discovery is by service UUID (a
+        # fixed constant, see protocol.BT_LE_SERVICE_UUID), not device
+        # address. bt_mac's mere presence above is reused only as the
+        # "there's a usable Bluetooth controller" signal.
+        payload["bt_le"] = True
+    else:
+        payload["bt_mac"] = bt_mac
+        payload["bt_channel"] = protocol.BT_CHANNEL
     with open(pairing_path(), "w") as f:
         json.dump(payload, f)
     return payload

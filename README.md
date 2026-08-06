@@ -26,7 +26,7 @@ of writing one more small adapter script - see `hooks/relay.py`.
   (auto-starting it if needed) for a decision, and blocks until it gets one
   or times out (~100s).
 - `daemon/approve_daemon.py` is a small persistent background process. It
-  owns the long-lived TCP connection(s) to your paired phone(s), and local
+  owns the long-lived connection(s) to your paired phone(s), and local
   relay endpoints under `/tmp/phone-ai-approve-$UID/` that hook invocations
   talk to. It prefers a Unix-domain socket (`daemon.sock`), but also watches
   a file relay directory (`requests/`) for sandboxes that deny socket
@@ -34,9 +34,23 @@ of writing one more small adapter script - see `hooks/relay.py`.
   the approval, it can push the phone's answer straight back to that hook.
 - The phone connects to the computer (not the other way around) by scanning
   a QR code / pairing code shown by `daemon/pairing.py`, which encodes the
-  computer's local IP address and a port, plus a random pre-shared token
-  used to authenticate the link. Phone and computer just need to be on the
-  same local network - no Bluetooth pairing/bonding involved.
+  computer's local IP address/port **and**, if a Bluetooth adapter was found,
+  its Bluetooth MAC address and a fixed RFCOMM channel, plus a random
+  pre-shared token used to authenticate the link either way.
+- **Two transports run side by side, not one-or-the-other.** On every
+  (re)connect attempt, the app races a plain TCP connection against a
+  Bluetooth RFCOMM connection (when the pairing has Bluetooth info) and just
+  uses whichever finishes its handshake first - so if the phone and computer
+  share a network, it's usually TCP; if Wi-Fi is off but they're physically
+  near each other and bonded over Bluetooth, it falls over to Bluetooth
+  instead, with no manual switch. The daemon mirrors this: it listens on both
+  a TCP port and (on Linux, and on macOS with `pyobjc-framework-IOBluetooth`
+  installed) a fixed RFCOMM channel at once, and a small arbiter
+  (`phone_link.TransportArbiter`) makes sure only one of them is ever treated
+  as the live connection for a given phone. Bluetooth here still requires the
+  normal OS-level bonding step (Bluetooth settings, on both sides) before it
+  works - the app only ever opens a *secure* (bonded) RFCOMM socket, never an
+  insecure/unbonded one.
 - Every connection is encrypted: right after connecting, both sides run an
   ephemeral ECDH key exchange (P-256) and derive AES-256-GCM session keys
   via HKDF, with the pre-shared token mixed into the derivation. Nothing
@@ -57,10 +71,12 @@ of writing one more small adapter script - see `hooks/relay.py`.
   (Codex CLI) are a second, simpler kind of hook: instead of blocking on a
   phone decision, they fire a fire-and-forget `notify` message
   (`hooks/relay.py`'s `send_notification()`) whenever each agent's `Stop`
-  event fires, so the phone gets a plain "session finished" push with a
-  snippet of the last reply. They reuse the same pairing, daemon, and
-  encrypted link as approval requests, just without the Allow/Deny round
-  trip - the app shows it as a normal notification, not a request card.
+  event fires, so the phone gets a plain turn-finished push with a snippet
+  of the last reply. Codex can also use `hooks/codex_session_end_notify.py`
+  under `SessionEnd` for an actual session-ended push when the main thread
+  closes or expires. These reuse the same pairing, daemon, and encrypted link
+  as approval requests, just without the Allow/Deny round trip - the app
+  shows them as normal notifications, not request cards.
 
 ## Setup
 
@@ -181,7 +197,9 @@ a turn finishes - no Allow/Deny involved, just an FYI ping:
 **Codex CLI**: add the hook under **`PermissionRequest`** in
 `~/.codex/hooks.json` (or the equivalent inline `[hooks]` table in
 `~/.codex/config.toml`) - here, unlike Claude Code, `PermissionRequest` *is*
-the right event, since Codex's version fires before its own approval prompt:
+the right event, since Codex's version fires before its own approval prompt.
+It only fires when Codex is about to ask for approval; commands that Codex can
+already run without approval won't produce phone requests:
 
 ```json
 {
@@ -202,17 +220,17 @@ the right event, since Codex's version fires before its own approval prompt:
 }
 ```
 
-Codex prompts to explicitly trust a new non-managed hook the first time it
-runs (via its `/hooks` command) - accept that once. This adapter hasn't
-been verified against a real Codex install; see its docstring before
-relying on it.
+Codex requires you to explicitly trust new or changed non-managed hooks before
+they run. Open `/hooks` in Codex after adding or editing these commands, review
+the entries, and trust them once. If a hook is configured but untrusted, Codex
+skips it, so no phone request or notification will be sent.
 
 Optionally, also add `hooks/codex_stop_notify.py` under **`Stop`** to get
-the same "session finished" push as Claude Code. Codex's `Stop` event is
+the same turn-finished push as Claude Code. Codex's `Stop` event is
 decision-making (it can extend a turn), unlike Claude Code's, but this
 adapter only ever observes it - it prints nothing and exits 0, which Codex
-treats as fail-open/continue, so it never affects whether the turn
-actually stops:
+treats as fail-open/continue, so it never affects whether the turn actually
+stops:
 
 ```json
 {
@@ -233,20 +251,48 @@ actually stops:
 ```
 
 Note `Stop` doesn't support `matcher` in Codex - any matcher there is
-ignored. This adapter is unverified against a real Codex install for the
-same reason as `codex_permission_hook.py` above.
+ignored.
+
+For a notification when the main Codex session really ends (separate from
+each assistant turn ending), add `hooks/codex_session_end_notify.py` under
+**`SessionEnd`** too:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/phone-ai-approve/hooks/codex_session_end_notify.py",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Requirements
 
-- Python 3 with `pip install -r daemon/requirements.txt` (just the
-  `cryptography` package, for the encrypted link), plus `daemon/pairing.py`'s
-  optional use of the external `qrencode` binary for terminal QR rendering.
-- Linux or macOS, with the computer and phone on the same local network (the
-  daemon binds a plain TCP socket - no Bluetooth stack needed on either
-  side).
+- Python 3 with `pip install -r daemon/requirements.txt` (`cryptography` for
+  the encrypted link; on macOS, also `pyobjc-framework-IOBluetooth` if you
+  want the daemon's Bluetooth listener - it's harmless to skip, the daemon
+  just falls back to TCP-only), plus `daemon/pairing.py`'s optional use of
+  the external `qrencode` binary for terminal QR rendering.
+- Linux or macOS. TCP needs the computer and phone on the same local
+  network; Bluetooth (optional, in addition to TCP - see "How it works")
+  needs them bonded via each OS's normal Bluetooth settings first. Bluetooth
+  is fully supported on Linux (stdlib `AF_BLUETOOTH`/BlueZ, no extra
+  dependency) and best-effort on macOS (via the optional PyObjC dependency
+  above) - if neither is available/installed, the daemon just runs TCP-only,
+  same as before this existed.
 - An Android phone (API 26+) with a camera for QR scanning; exempt the app
   from battery optimization if you want the connection to survive the phone
-  being idle for a long time.
+  being idle for a long time. Bluetooth Classic support on the phone is
+  optional - TCP works standalone either way.
 
 ## Testing without the Android app
 
@@ -279,12 +325,15 @@ file-relay fallback.
   fire-and-forget "session finished" push instead of an approval request.
 - `hooks/codex_permission_hook.py` - the Codex CLI `PermissionRequest` hook adapter.
 - `hooks/codex_stop_notify.py` - the Codex CLI `Stop` hook adapter; sends a
-  fire-and-forget "session finished" push instead of an approval request.
+  fire-and-forget turn-finished push instead of an approval request.
+- `hooks/codex_session_end_notify.py` - the Codex CLI `SessionEnd` hook
+  adapter; sends a fire-and-forget session-ended push.
 - `hooks/relay.py` - shared daemon-relay logic both adapters call into.
-- `daemon/approve_daemon.py` - persistent daemon owning the phone link(s).
-- `daemon/phone_link.py` - `TcpPhoneLink`: accept loop, hello handshake, line-JSON read loop.
-- `daemon/secure_channel.py` - `EncryptedConn`: ECDH key exchange + AES-GCM encryption for every connection.
-- `daemon/pairing.py` - generates the pairing token + QR code (host/port + token).
+- `daemon/approve_daemon.py` - persistent daemon owning the phone link(s) across all transports.
+- `daemon/phone_link.py` - `TcpPhoneLink`/`LinuxBtPhoneLink`: accept loop, hello handshake, line-JSON read loop, and the `TransportArbiter` that keeps only one transport "live" per phone at a time.
+- `daemon/bt_backend_macos.py` - the macOS Bluetooth backend (`pyobjc-framework-IOBluetooth`); best-effort, see its docstring.
+- `daemon/secure_channel.py` - `EncryptedConn`: ECDH key exchange + AES-GCM encryption for every connection, on any transport.
+- `daemon/pairing.py` - generates the pairing token + QR code (host/port, and Bluetooth MAC/channel if available, + token).
 - `daemon/pairing_web.py` - same, but serves the QR as a local web page instead of terminal ANSI art.
 - `daemon/session_allow.py` - "Allow always" marker-file helpers.
 - `daemon/protocol.py` - shared message schemas for both wire protocols.
@@ -299,8 +348,9 @@ file-relay fallback.
 - `ui/RequestsScreen.kt` - Compose list of pending requests, the Devices management dialog, and the Settings dialog.
 - `service/ConnectionService.kt` - foreground service keeping all paired connections alive in the background.
 - `service/ApprovalActionReceiver.kt` - handles Allow/Allow always/Deny taps from notifications.
-- `data/DaemonLinkManager.kt` - owns one TCP connection per paired computer, connect/reconnect loop, and message routing.
-- `data/SecureChannel.kt` - Kotlin mirror of `daemon/secure_channel.py`'s ECDH + AES-GCM handshake.
+- `data/DaemonLinkManager.kt` - owns one connection per paired computer; races a TCP and a Bluetooth attempt on every (re)connect cycle and runs whichever wins.
+- `data/BluetoothRfcomm.kt` - bonded-device lookup and the fixed-channel RFCOMM socket helper the Bluetooth race uses.
+- `data/SecureChannel.kt` - Kotlin mirror of `daemon/secure_channel.py`'s ECDH + AES-GCM handshake; transport-agnostic, used by both races.
 - `data/PairingRepository.kt` - `EncryptedSharedPreferences`-backed storage for the list of paired computers.
 - `data/SettingsRepository.kt` - theme and notification-actions preferences.
 - `model/Protocol.kt` - `kotlinx.serialization` mirror of `daemon/protocol.py`'s schemas.
@@ -318,13 +368,18 @@ file-relay fallback.
   session keys than the real endpoints even if they intercept and
   substitute the key-exchange messages, so tampering just breaks the
   connection (AES-GCM auth failure) rather than silently succeeding.
-- That said, there's no physical-proximity requirement anymore the way
-  Bluetooth had: **anyone who can reach the daemon's TCP port on your local
-  network and has the token can still act as your phone.** The token is a
-  128-bit random secret, so guessing it isn't practical - but don't let the
-  pairing QR/code leak (screenshots, screen-sharing, a shoulder-surfed
-  terminal), and be more cautious pairing over untrusted/shared networks
-  than you'd need to be with Bluetooth's shorter range.
+- That said, over TCP there's no physical-proximity requirement:
+  **anyone who can reach the daemon's TCP port on your local network and has
+  the token can still act as your phone.** The token is a 128-bit random
+  secret, so guessing it isn't practical - but don't let the pairing QR/code
+  leak (screenshots, screen-sharing, a shoulder-surfed terminal), and be more
+  cautious pairing over untrusted/shared networks. Bluetooth, when it's the
+  transport actually in use, brings back a real proximity + bonding barrier
+  on top of this (an attacker also needs to have bonded with your computer),
+  but which transport wins any given reconnect is decided automatically by
+  whichever connects first (see "How it works") - don't rely on "Bluetooth
+  only" as a security boundary, since TCP is still live and racing alongside
+  it whenever both are available.
 - Anyone who taps a button on your paired phone can approve/deny tool calls
   in your Claude Code sessions - same trust model as [tg-approve's](https://github.com/jzethar/claude-telegram-approvals) Telegram
   chat, just narrowed to "whoever holds this specific phone." Turning on

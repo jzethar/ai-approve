@@ -6,8 +6,23 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Bluetooth transport, alongside TCP: classic RFCOMM to a bonded
+         device (Linux daemons - see BluetoothRfcomm.kt), or BLE central
+         scan+connect (macOS daemons, which run a GATT server instead - see
+         BluetoothLeClient.kt and daemon/bt_backend_macos.py). BLUETOOTH_SCAN
+         is only needed for the BLE path; declared with neverForLocation
+         since we only ever match our fixed service UUID's presence, never
+         correlate scan results with position. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <!-- required="false": TCP must keep working standalone on Bluetooth-less devices. -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <application
         android:allowBackup="true"

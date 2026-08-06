@@ -36,7 +36,7 @@ class Daemon:
     def __init__(self):
         self._pending_lock = threading.Lock()
         self._pending = {}  # req_id -> dict(event, result, session_id, tool_name)
-        self._link = None
+        self._links = []
 
         info = pairing.load_pairing()
         if info is None:
@@ -51,19 +51,41 @@ class Daemon:
             info = pairing.load_pairing()
             return info["tok"] if info else None
 
-        self._link = phone_link.TcpPhoneLink(
+        # Shared across both transports so that if TCP and Bluetooth both
+        # accept a connection from the same phone (e.g. right after startup),
+        # only whichever finishes its handshake first is treated as live -
+        # see phone_link.TransportArbiter.
+        arbiter = phone_link.TransportArbiter()
+
+        self._links.append(phone_link.TcpPhoneLink(
             get_token=current_token, port=info["port"],
             on_message=self._on_phone_message,
-            on_connect=lambda: log("phone connected"),
+            on_connect=lambda: log("phone connected (tcp)"),
             on_disconnect=self._on_phone_disconnect,
-            log=log,
+            log=log, arbiter=arbiter,
+        ))
+
+        bt_link = phone_link.make_bt_phone_link(
+            get_token=current_token, channel=protocol.BT_CHANNEL,
+            on_message=self._on_phone_message,
+            on_connect=lambda: log("phone connected (bt)"),
+            on_disconnect=self._on_phone_disconnect,
+            log=log, arbiter=arbiter,
         )
+        if bt_link is not None:
+            self._links.append(bt_link)
 
     def start(self):
-        if self._link is not None:
-            self._link.start()
+        for link in self._links:
+            link.start()
         threading.Thread(target=self._serve_file_relay, daemon=True).start()
         self._serve_local()
+
+    def _active_link(self):
+        # Safe to return the first connected link found: the shared
+        # TransportArbiter guarantees at most one of self._links is ever
+        # connected at a time, so there's no ordering-dependent ambiguity.
+        return next((link for link in self._links if link.is_connected()), None)
 
     def _on_phone_disconnect(self):
         log("phone disconnected")
@@ -108,7 +130,8 @@ class Daemon:
         session_id = req["session_id"]
         tool_name = req["tool_name"]
 
-        if self._link is None or not self._link.is_connected():
+        link = self._active_link()
+        if link is None:
             return protocol.build_local_response("no_phone", "no phone paired/connected")
 
         event = threading.Event()
@@ -116,7 +139,7 @@ class Daemon:
         with self._pending_lock:
             self._pending[req_id] = entry
 
-        sent = self._link.send(protocol.build_request(
+        sent = link.send(protocol.build_request(
             req_id, session_id, tool_name, req["tool_input"], req["cwd"], time.time()))
         if not sent:
             with self._pending_lock:
@@ -134,8 +157,9 @@ class Daemon:
         """Fire-and-forget session-finished ping: best-effort forward to the
         phone if connected, but never blocks waiting for it - there's no
         Allow/Deny to wait on, unlike handle_local_request's approval flow."""
-        if self._link is not None and self._link.is_connected():
-            self._link.send(protocol.build_notify(
+        link = self._active_link()
+        if link is not None:
+            link.send(protocol.build_notify(
                 req["session_id"], req["cwd"], req["message"], time.time()))
         return {"ok": True}
 

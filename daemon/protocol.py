@@ -29,10 +29,50 @@ import os
 # in the clear. An old plaintext-only app/daemon talking to a new encrypted
 # one fails the handshake outright (it never sends/expects the initial kex
 # message), rather than silently working unencrypted.
-PROTOCOL_VERSION = 3
+#
+# v4: Bluetooth RFCOMM is back as a second transport, running alongside TCP
+# rather than replacing it (see daemon/phone_link.py) - the pairing payload
+# now optionally carries bt_mac/bt_channel so the phone can race a Bluetooth
+# connection attempt against the TCP one and use whichever completes its
+# handshake first. Both new fields are optional/additive (unlike the v1->v2
+# rename), so a v3 app or daemon still talks TCP-only with a v4 peer.
+#
+# v5: classic Bluetooth RFCOMM *server* mode isn't reliably available to
+# third-party apps on macOS (bluetoothd owns the RFCOMM mux and doesn't
+# expose server-mode registration the way BlueZ does on Linux) - see
+# daemon/bt_backend_macos.py. macOS now runs a BLE peripheral/GATT server
+# instead and signals this via the optional bt_le flag; Linux is unaffected
+# and keeps emitting bt_mac/bt_channel exactly as in v4. Also additive, so a
+# v4 peer just doesn't see the new field and stays TCP-only against a macOS
+# v5 daemon (which is a no-op change from today, since macOS Bluetooth
+# effectively never worked before this).
+PROTOCOL_VERSION = 5
 TOOL_INPUT_TRUNCATE = 1200
 STATE_DIR_NAME = ".phone-ai-approve"
 RUNTIME_DIR_NAME = "phone-ai-approve"
+
+# Fixed RFCOMM channel the daemon's Bluetooth listener binds to and the app
+# connects to directly (by channel number, not SDP lookup) - see
+# daemon/phone_link.py's LinuxBtPhoneLink and daemon/bt_backend_macos.py for
+# why a fixed channel sidesteps needing a full SDP server on Linux. Kept here
+# as the single source of truth so payload generation (pairing.py) and the
+# actual bind/publish (phone_link.py / bt_backend_macos.py) never drift apart.
+BT_CHANNEL = 4
+
+# BLE GATT UUIDs for the macOS Bluetooth transport (see
+# daemon/bt_backend_macos.py's CBPeripheralManager-based server and
+# BluetoothLeClient.kt's matching central). Fixed constants, same spirit as
+# BT_CHANNEL above - both sides know them ahead of time, no discovery/
+# negotiation needed. RX is phone->daemon (Write, with response - Write-
+# without-response requests never reach peripheralManager:didReceiveWriteRequests:,
+# so it's deliberately not offered); TX is daemon->phone (Notify). A peer
+# that happens to advertise/scan for the same service UUID without knowing
+# our pairing token just fails the handshake and gets retried, exactly like
+# a stray connection to TCP_PORT already does today - this is not a new
+# class of exposure.
+BT_LE_SERVICE_UUID = "7f3a2b1a-0001-4c7a-9c1f-6f3f2b6a8e11"
+BT_LE_RX_CHAR_UUID = "7f3a2b1a-0002-4c7a-9c1f-6f3f2b6a8e11"
+BT_LE_TX_CHAR_UUID = "7f3a2b1a-0003-4c7a-9c1f-6f3f2b6a8e11"
 
 # Actions a phone response (or a local daemon->hook response) may carry.
 PHONE_ACTIONS = {"allow", "allow_always", "deny", "other"}
