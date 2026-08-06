@@ -25,6 +25,7 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
@@ -240,7 +241,23 @@ private class DeviceLink(
      * `threads.forEach { it.join() }` naturally waits out the whole
      * connection's lifetime, not just the initial handshake. A losing
      * attempt (failed outright, or beaten to the punch) just closes its own
-     * raw socket and returns. */
+     * raw socket and returns.
+     *
+     * A watchdog bounds [attempt] itself: [SecureChannel]'s handshake reads
+     * (readKexLine/recvLine) block on a plain BufferedReader.readLine() with
+     * no timeout at all, and a BLE [GattStreamSocket]'s stream is backed by
+     * a PipedInputStream that has no read-timeout concept either. If the
+     * daemon side is ever in a half-broken state (confirmed after a macOS
+     * sleep/wake cycle - the peripheral kept accepting GATT connections but
+     * never actually replied), that read blocks forever, `attempt()` never
+     * returns, and this whole device's reconnect loop freezes permanently -
+     * only a full app restart recovered. The watchdog force-closes [mine]
+     * if `attempt()` hasn't finished within CONNECT_ATTEMPT_TIMEOUT_MS,
+     * which unblocks the stuck read with an IOException. It only ever
+     * touches the connect+handshake phase - attemptDone flips true (and the
+     * watchdog is interrupted) the moment attempt() returns, so a winning,
+     * already-connected transport's long-lived readLoop below is never
+     * affected by this ceiling. */
     private fun race(
         transport: Transport,
         winner: AtomicReference<Transport?>,
@@ -248,10 +265,24 @@ private class DeviceLink(
         other: AtomicReference<Closeable?>,
         attempt: () -> SecureChannel?,
     ) {
+        val attemptDone = AtomicBoolean(false)
+        val watchdog = Thread {
+            try {
+                Thread.sleep(CONNECT_ATTEMPT_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                return@Thread
+            }
+            if (!attemptDone.get()) closeQuietly(mine.get())
+        }.apply { isDaemon = true }
+        watchdog.start()
+
         val secureChannel = try {
             attempt()
         } catch (_: Exception) {
             null
+        } finally {
+            attemptDone.set(true)
+            watchdog.interrupt()
         }
         if (secureChannel == null || !winner.compareAndSet(null, transport)) {
             closeQuietly(mine.get())
@@ -372,5 +403,10 @@ private class DeviceLink(
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 5000
+        // Generous ceiling over the whole connect+handshake sequence (BLE's
+        // own scan/GATT-setup timeouts in BluetoothLeClient already bound
+        // themselves to 8s each; this mainly exists to bound the otherwise-
+        // unbounded handshake reads in SecureChannel - see race()'s doc).
+        private const val CONNECT_ATTEMPT_TIMEOUT_MS = 30_000L
     }
 }

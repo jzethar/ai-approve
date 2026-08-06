@@ -155,8 +155,18 @@ class GattStreamSocket internal constructor() : Closeable {
     private val readyLatch = CountDownLatch(1)
     @Volatile private var readyOk = false
 
+    // writeLock only ever serializes writeChunk() callers against each other
+    // (the "one GATT write in flight at a time" rule) - onCharacteristicWrite()
+    // and close() must NEVER take this lock, since writeChunk() holds it for
+    // the full duration of latch.await() below. Taking it from the callback
+    // too self-deadlocks (broken only by WRITE_TIMEOUT_MS) since the very
+    // thread that would signal the latch blocks trying to acquire a lock the
+    // waiting thread is still holding - confirmed empirically: the write
+    // callback fired in ~3ms every time, but latch.await() still reported a
+    // 5s timeout. writeLatch is @Volatile so the callback can read/countDown
+    // it with no lock at all.
     private val writeLock = Object()
-    private var writeLatch: CountDownLatch? = null
+    @Volatile private var writeLatch: CountDownLatch? = null
     @Volatile private var writeOk = false
 
     /** Blocks until GATT setup finishes (or fails/times out); throws
@@ -179,7 +189,7 @@ class GattStreamSocket internal constructor() : Closeable {
         try { gatt?.close() } catch (_: Exception) { }
         try { pipeOut.close() } catch (_: Exception) { }
         readyLatch.countDown() // unblock connectAndSetup() if it's still waiting
-        synchronized(writeLock) { writeLatch?.countDown() }
+        writeLatch?.countDown()
     }
 
     private inner class GattOutputStream : OutputStream() {
@@ -196,9 +206,12 @@ class GattStreamSocket internal constructor() : Closeable {
         }
 
         /** Only one GATT write may be in flight at a time (an Android BLE
-         * stack requirement) - write-with-response is used specifically so
-         * each chunk's [onCharacteristicWrite] ack both enforces that and
-         * gives natural backpressure, no separate flow-control needed. */
+         * stack requirement) - write-without-response is used so this never
+         * depends on the macOS peripheral's (bt_backend_macos.py) ATT-level
+         * write-response actually making it back over the air. Locally,
+         * [onCharacteristicWrite] still fires once the write is handed to
+         * the controller either way, which is all the backpressure here
+         * actually needs. */
         private fun writeChunk(b: ByteArray, off: Int, len: Int) {
             if (closed) throw IOException("BLE connection closed")
             val g = gatt ?: throw IOException("BLE connection not established")
@@ -210,11 +223,11 @@ class GattStreamSocket internal constructor() : Closeable {
                 writeLatch = latch
                 writeOk = false
                 val queued = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    g.writeCharacteristic(char, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+                    g.writeCharacteristic(char, chunk, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) ==
                         BluetoothStatusCodes.SUCCESS
                 } else {
                     @Suppress("DEPRECATION")
-                    char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     @Suppress("DEPRECATION")
                     char.value = chunk
                     @Suppress("DEPRECATION")
@@ -304,7 +317,7 @@ class GattStreamSocket internal constructor() : Closeable {
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             writeOk = status == BluetoothGatt.GATT_SUCCESS
-            synchronized(writeLock) { writeLatch?.countDown() }
+            writeLatch?.countDown()
         }
     }
 }

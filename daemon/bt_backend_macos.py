@@ -51,7 +51,6 @@ fully on its own.
 import queue
 import socket
 import threading
-import time
 
 import protocol
 from phone_link import _StreamPhoneLink
@@ -170,6 +169,8 @@ class MacBtPhoneLink(_StreamPhoneLink):
         self._rx_char = None
         self._tx_char = None
         self._delegate = None  # kept alive for the daemon's lifetime; see start()
+        self._gcd_queue = None
+        self._wake_observer = None  # kept alive for the daemon's lifetime; see _setup_thread()
 
         try:
             import CoreBluetooth  # noqa: F401
@@ -186,7 +187,8 @@ class MacBtPhoneLink(_StreamPhoneLink):
         super().start()
 
     def _setup_thread(self):
-        import CoreBluetooth
+        import AppKit
+        from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
 
         try:
             import dispatch
@@ -196,25 +198,68 @@ class MacBtPhoneLink(_StreamPhoneLink):
                       f"delegate model)")
             return
 
-        gcd_queue = dispatch.dispatch_queue_create(b"phone-ai-approve-ble", None)
+        self._gcd_queue = dispatch.dispatch_queue_create(b"phone-ai-approve-ble", None)
+        self._create_manager()
+
+        # A CBPeripheralManager doesn't survive a system sleep/wake cycle
+        # reliably - confirmed empirically: after wake, this process kept
+        # re-advertising every couple minutes (peripheralManagerDidUpdateState_
+        # cycling through PoweredOff/PoweredOn again) but no phone could ever
+        # actually complete a connection again, only a full process restart
+        # fixed it. Rather than trust the existing manager to recover on its
+        # own, listen for the system wake notification and force a brand new
+        # CBPeripheralManager (and drop any stale central references) every
+        # time - cheap, and sidesteps needing to understand exactly which
+        # internal state gets corrupted across the sleep.
+        self._wake_observer = _WakeObserver(self)
+        AppKit.NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self._wake_observer, "wake:", AppKit.NSWorkspaceDidWakeNotification, None)
+
+        # Delegate callbacks arrive on self._gcd_queue, driven by GCD's own
+        # thread pool; the wake notification above arrives via this thread's
+        # own CFRunLoop. Nothing to pump for the former, but the latter needs
+        # an actual run loop to ever be delivered - confirmed empirically
+        # that a bare CFRunLoopRun() here returns near-instantly (a freshly
+        # spawned thread's run loop has no sources yet, and CFRunLoopRun()
+        # exits immediately rather than blocking when that's the case), and
+        # once this function returns and the thread exits, CBPeripheralManager
+        # stops delivering callbacks at all - not just the wake notification.
+        # Looping short RunInMode calls both keeps this thread alive forever
+        # (matching the plain sleep-loop this replaced) and re-registers the
+        # run loop each cycle so the wake notification actually gets a chance
+        # to fire.
+        while not self._stop:
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, False)
+
+    def _create_manager(self):
+        import CoreBluetooth
+
         self._delegate = _PeripheralDelegate(self)
         self._manager = CoreBluetooth.CBPeripheralManager.alloc().initWithDelegate_queue_(
-            self._delegate, gcd_queue)
+            self._delegate, self._gcd_queue)
 
-        # Delegate callbacks now arrive on gcd_queue, driven by GCD's own
-        # thread pool - nothing to pump on this thread. It just blocks to
-        # keep strong references to _manager/_delegate alive for the
-        # daemon's lifetime (pyobjc objects are refcounted like anything
-        # else; letting this thread exit could free them mid-callback).
-        while not self._stop:
-            time.sleep(1)
+    def _on_system_wake(self):
+        self._log("bt(mac): system woke from sleep - recreating BLE peripheral manager")
+        try:
+            self._manager.stopAdvertising()
+        except Exception:
+            pass
+        # Any centrals connected before sleep are gone regardless of whether
+        # the OS ever tells us so explicitly - drop them so a stuck shim
+        # doesn't linger and confuse the next real connection.
+        for shim in list(self._centrals.values()):
+            shim._on_closed()
+        self._centrals.clear()
+        self._rx_char = None
+        self._tx_char = None
+        self._create_manager()
 
     def _add_service_and_advertise(self):
         import CoreBluetooth
 
         self._rx_char = CoreBluetooth.CBMutableCharacteristic.alloc().initWithType_properties_value_permissions_(
             CoreBluetooth.CBUUID.UUIDWithString_(protocol.BT_LE_RX_CHAR_UUID),
-            CoreBluetooth.CBCharacteristicPropertyWrite,
+            CoreBluetooth.CBCharacteristicPropertyWriteWithoutResponse,
             None,
             CoreBluetooth.CBAttributePermissionsWriteable,
         )
@@ -258,7 +303,12 @@ class MacBtPhoneLink(_StreamPhoneLink):
             if shim is not None:
                 shim._on_data(bytes(req.value()))
         # Per CBPeripheralManagerDelegate docs: respond once, on the first
-        # request in the array, to ack/nack the whole batch.
+        # request in the array, to ack/nack the whole batch. The RX
+        # characteristic is write-without-response (see
+        # _add_service_and_advertise), so this ack is never actually waited
+        # on by the central - kept anyway since Apple's own sample code
+        # always responds regardless of write type, and it's a harmless no-op
+        # if CoreBluetooth ignores it for a write-without-response request.
         self._manager.respondToRequest_withResult_(requests[0], 0)  # CBATTErrorSuccess
 
     def _on_ready_to_update(self):
@@ -319,3 +369,16 @@ class _PeripheralDelegate:
     def peripheralManagerIsReadyToUpdateSubscribers_(self, manager):
         del manager
         self._link._on_ready_to_update()
+
+
+class _WakeObserver:
+    """Plain Python object handed to NSWorkspace's notification center as
+    the observer target for NSWorkspaceDidWakeNotification - same
+    no-NSObject-subclass-needed pattern as _PeripheralDelegate above."""
+
+    def __init__(self, link: MacBtPhoneLink):
+        self._link = link
+
+    def wake_(self, notification):
+        del notification
+        self._link._on_system_wake()
