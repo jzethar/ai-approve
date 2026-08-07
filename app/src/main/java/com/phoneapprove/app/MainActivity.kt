@@ -44,7 +44,10 @@ class MainActivity : ComponentActivity() {
         if (pairingRepo.loadAll().isNotEmpty()) {
             startConnectionService()
         }
-        SettingsRepository(applicationContext).syncThemeModeFlowFromPrefs()
+        SettingsRepository(applicationContext).apply {
+            syncThemeModeFlowFromPrefs()
+            syncAutoApproveFlowFromPrefs()
+        }
 
         setContent {
             var pairings by remember { mutableStateOf(pairingRepo.loadAll()) }

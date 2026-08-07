@@ -41,6 +41,7 @@ import com.phoneapprove.app.data.SettingsRepository
 import com.phoneapprove.app.data.ThemeMode
 import com.phoneapprove.app.data.Transport
 import com.phoneapprove.app.model.ApprovalRequest
+import com.phoneapprove.app.model.AutoApprovedRequest
 import com.phoneapprove.app.model.SessionNotify
 
 @Composable
@@ -53,6 +54,7 @@ fun RequestsScreen(
     val activeTransports by DaemonLinkManager.activeTransports.collectAsState()
     val requests by DaemonLinkManager.requests.collectAsState()
     val sessionHistory by DaemonLinkManager.sessionHistory.collectAsState()
+    val autoApprovedHistory by DaemonLinkManager.autoApprovedHistory.collectAsState()
     var showDevices by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -74,7 +76,7 @@ fun RequestsScreen(
         }
         Spacer(modifier = Modifier.height(12.dp))
 
-        if (requests.isEmpty() && sessionHistory.isEmpty()) {
+        if (requests.isEmpty() && sessionHistory.isEmpty() && autoApprovedHistory.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No pending approval requests.")
             }
@@ -99,6 +101,24 @@ fun RequestsScreen(
                         SessionCard(notify, onDismiss = {
                             DaemonLinkManager.dismissSessionNotification(notify.sessionId, notify.ts)
                         })
+                    }
+                }
+
+                if (autoApprovedHistory.isNotEmpty()) {
+                    item(key = "auto-approved-history-header") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Auto-approved", style = MaterialTheme.typography.labelLarge)
+                            TextButton(onClick = { DaemonLinkManager.clearAutoApprovedHistory() }) {
+                                Text("Clear")
+                            }
+                        }
+                    }
+                    items(autoApprovedHistory, key = { "auto_${it.reqId}" }) { record ->
+                        AutoApprovedCard(record)
                     }
                 }
             }
@@ -202,6 +222,8 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { SettingsRepository(context) }
     var notificationActionsEnabled by remember { mutableStateOf(settings.notificationActionsEnabled()) }
+    var autoApproveEnabled by remember { mutableStateOf(settings.autoApproveEnabled()) }
+    var showAutoApproveConfirm by remember { mutableStateOf(false) }
     val themeMode by SettingsRepository.themeModeFlow.collectAsState()
 
     AlertDialog(
@@ -236,6 +258,38 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-approve requests")
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Every approval request is answered with Allow the moment it " +
+                                "arrives, without asking you first - never Allow always. A " +
+                                "question (not a plain approve request) still always needs " +
+                                "your manual reply. Auto-approved requests are kept below as " +
+                                "history you can clear.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(
+                        checked = autoApproveEnabled,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                showAutoApproveConfirm = true
+                            } else {
+                                autoApproveEnabled = false
+                                settings.setAutoApproveEnabled(false)
+                            }
+                        },
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
                 Text("Theme")
                 Spacer(modifier = Modifier.height(4.dp))
                 for (mode in ThemeMode.entries) {
@@ -261,6 +315,24 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss) { Text("Done") }
         },
     )
+
+    if (showAutoApproveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showAutoApproveConfirm = false },
+            title = { Text("Auto-approve everything?") },
+            text = { Text("Are you sure you want to autoapprove everything?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    autoApproveEnabled = true
+                    settings.setAutoApproveEnabled(true)
+                    showAutoApproveConfirm = false
+                }) { Text("Yes") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAutoApproveConfirm = false }) { Text("No") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -366,6 +438,37 @@ private fun SessionCard(notify: SessionNotify, onDismiss: () -> Unit) {
                     Text("Dismiss")
                 }
             }
+        }
+    }
+}
+
+/** Informational, like [SessionCard] - this request was already answered
+ * with "allow" by the auto-approve setting, so there's nothing left to
+ * Allow/Deny here either, just a record of what went through. */
+@Composable
+private fun AutoApprovedCard(record: AutoApprovedRequest) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(record.toolName, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    record.deviceName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+            Text(record.cwd, style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(record.toolInput, style = MaterialTheme.typography.bodyMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Auto-approved (Allow)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

@@ -3,6 +3,7 @@ package com.phoneapprove.app.data
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import com.phoneapprove.app.model.ApprovalRequest
+import com.phoneapprove.app.model.AutoApprovedRequest
 import com.phoneapprove.app.model.HelloMessage
 import com.phoneapprove.app.model.IncomingMessage
 import com.phoneapprove.app.model.NotifyMessage
@@ -54,6 +55,7 @@ enum class Transport { TCP, BLUETOOTH }
  */
 object DaemonLinkManager {
     private const val MAX_SESSION_HISTORY = 20
+    private const val MAX_AUTO_APPROVE_HISTORY = 20
 
     // Mirrors daemon/protocol.py's REQUEST_TIMEOUT_SECONDS by hand (the phone
     // has no way to read that file) - the daemon gives up waiting on the
@@ -90,6 +92,13 @@ object DaemonLinkManager {
     private val _sessionHistory = MutableStateFlow<List<SessionNotify>>(emptyList())
     val sessionHistory: StateFlow<List<SessionNotify>> = _sessionHistory.asStateFlow()
 
+    // Durable, bounded history of requests answered automatically because
+    // SettingsRepository.autoApproveFlow was on when they arrived - see
+    // onRequest below. Mirrors _sessionHistory's shape/newest-first
+    // ordering so RequestsScreen can render it the same way.
+    private val _autoApprovedHistory = MutableStateFlow<List<AutoApprovedRequest>>(emptyList())
+    val autoApprovedHistory: StateFlow<List<AutoApprovedRequest>> = _autoApprovedHistory.asStateFlow()
+
     /** Starts (or restarts, e.g. after re-pairing rotated the token or the
      * host's IP changed) the link for this device. Always tears down and
      * recreates the link, so callers doing a cold-start restore should
@@ -107,8 +116,23 @@ object DaemonLinkManager {
                 _activeTransports.update { if (transport != null) it + (pairing.id to transport) else it - pairing.id }
             },
             onRequest = { request ->
-                _requests.update { current ->
-                    if (current.any { it.reqId == request.reqId }) current else current + request
+                // Auto-approve only handles plain approve/deny requests -
+                // a question-style request (proposed-answer `options`) has
+                // no "allow" that makes sense as an answer, so it always
+                // still goes through the normal pending-request flow below,
+                // per the "only ALLOW, never ALLOW ALWAYS, and never for
+                // questions" requirement on this setting.
+                val autoApproved = SettingsRepository.autoApproveFlow.value &&
+                    request.options.isNullOrEmpty() &&
+                    (synchronized(this) { links[pairing.id] })?.respond(request.reqId, "allow", null) == true
+                if (autoApproved) {
+                    _autoApprovedHistory.update { current ->
+                        (listOf(request.toAutoApprovedRequest()) + current).take(MAX_AUTO_APPROVE_HISTORY)
+                    }
+                } else {
+                    _requests.update { current ->
+                        if (current.any { it.reqId == request.reqId }) current else current + request
+                    }
                 }
             },
             onNotify = { notify ->
@@ -158,6 +182,10 @@ object DaemonLinkManager {
         _sessionHistory.value = emptyList()
     }
 
+    fun clearAutoApprovedHistory() {
+        _autoApprovedHistory.value = emptyList()
+    }
+
     init {
         // Backstop sweep for stuck request cards - see REQUEST_TIMEOUT_SECONDS
         // above for why this exists alongside the daemon's own "cancel" push.
@@ -184,6 +212,16 @@ object DaemonLinkManager {
  * phone_link.py), which also only commits to a transport after a successful
  * handshake, so both sides land on the same winner even when the daemon
  * rejects a raw-connected loser a moment later. */
+private fun ApprovalRequest.toAutoApprovedRequest() = AutoApprovedRequest(
+    reqId = reqId,
+    toolName = toolName,
+    toolInput = toolInput,
+    cwd = cwd,
+    ts = ts,
+    deviceId = deviceId,
+    deviceName = deviceName,
+)
+
 private class DeviceLink(
     private val context: Context,
     private val pairing: PairingInfo,
