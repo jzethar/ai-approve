@@ -21,7 +21,11 @@ import phone_link
 import protocol
 import session_allow
 
-LOCAL_TIMEOUT = 100.0  # must stay comfortably under the hook's own deadline
+# Must stay comfortably under the hook's own deadline (relay.py's
+# SOCK_TIMEOUT). Shared with the phone side (which mirrors this value by
+# hand as DaemonLinkManager.kt's REQUEST_TIMEOUT_SECONDS) via the "cancel"
+# message sent below when this fires - see protocol.REQUEST_TIMEOUT_SECONDS.
+LOCAL_TIMEOUT = protocol.REQUEST_TIMEOUT_SECONDS
 
 
 def log(msg):
@@ -151,6 +155,13 @@ class Daemon:
         with self._pending_lock:
             entry = self._pending.pop(req_id, entry)
         if not got_it:
+            # Tell the phone to drop this card/notification now rather than
+            # leaving it stuck - best-effort: if the link has since dropped,
+            # the phone's own self-expiry timer (mirroring LOCAL_TIMEOUT)
+            # is the backstop, see DaemonLinkManager.kt.
+            still_active = self._active_link()
+            if still_active is not None:
+                still_active.send(protocol.build_cancel(req_id))
             return protocol.build_local_response("timeout", "no response from phone")
         return entry["result"]
 

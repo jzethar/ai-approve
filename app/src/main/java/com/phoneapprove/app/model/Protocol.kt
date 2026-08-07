@@ -77,6 +77,12 @@ data class NotifyMessage(
     val ts: Double,
 )
 
+@Serializable
+data class CancelMessage(
+    val type: String = "cancel",
+    val req_id: String,
+)
+
 // encodeDefaults=true is required: HelloMessage/ResponseMessage's `type`
 // field has a default value ("hello"/"response"), and kotlinx.serialization
 // omits fields that equal their default unless told otherwise - confirmed
@@ -88,6 +94,7 @@ sealed class IncomingMessage {
     data class Ack(val ok: Boolean) : IncomingMessage()
     data class Req(val message: RequestMessage) : IncomingMessage()
     data class Notify(val message: NotifyMessage) : IncomingMessage()
+    data class Cancel(val reqId: String) : IncomingMessage()
     object Unknown : IncomingMessage()
 }
 
@@ -98,6 +105,7 @@ fun parseIncoming(line: String): IncomingMessage {
             "hello_ack" -> IncomingMessage.Ack(protocolJson.decodeFromJsonElement(HelloAckMessage.serializer(), obj).ok)
             "request" -> IncomingMessage.Req(protocolJson.decodeFromJsonElement(RequestMessage.serializer(), obj))
             "notify" -> IncomingMessage.Notify(protocolJson.decodeFromJsonElement(NotifyMessage.serializer(), obj))
+            "cancel" -> IncomingMessage.Cancel(protocolJson.decodeFromJsonElement(CancelMessage.serializer(), obj).req_id)
             else -> IncomingMessage.Unknown
         }
     } catch (e: Exception) {

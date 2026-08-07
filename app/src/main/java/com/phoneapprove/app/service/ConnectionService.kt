@@ -41,11 +41,20 @@ class ConnectionService : Service() {
     // system settings.
     private val sessionChannelId = "phone_approve_sessions_v2"
     private var notifiedReqIds: Set<String> = emptySet()
+    private var notifiedSessionKeys: Set<String> = emptySet()
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
         startForeground(NOTIFICATION_ID, buildStatusNotification(emptyMap(), 0))
+
+        // A notification posted by a previous process (killed by the OS, or a
+        // crash) outlives that process - the fresh DaemonLinkManager singleton
+        // starts with empty state, so notifiedReqIds/notifiedSessionKeys below
+        // have nothing to diff those old ids against and would otherwise never
+        // cancel them. Sweep once up front so a restart can't leave an orphaned
+        // card/session notification stuck in the shade forever.
+        cancelOrphanedNotifications()
 
         // Only start links this process isn't already managing - if MainActivity just
         // called DaemonLinkManager.start() directly for a freshly-added pairing before
@@ -71,6 +80,16 @@ class ConnectionService : Service() {
 
         scope.launch {
             DaemonLinkManager.notifications.collect { notify -> postSessionNotification(notify) }
+        }
+
+        // Session notifications are posted once (above, from the one-shot
+        // event flow) but can be dismissed two ways: swiping the single
+        // SessionCard in-app, or tapping "Clear" on the whole history - both
+        // just mutate sessionHistory and have no idea a real OS notification
+        // is still up. Diffing this durable list the same way requests are
+        // diffed above is what actually cancels it either way.
+        scope.launch {
+            DaemonLinkManager.sessionHistory.collect { history -> updateSessionNotifications(history) }
         }
     }
 
@@ -140,6 +159,41 @@ class ConnectionService : Service() {
         notifiedReqIds = emptySet()
     }
 
+    /** Mirrors [updateRequestNotifications] for the session-finished channel:
+     * [sessionHistory] is the durable list a dismissed/cleared entry actually
+     * disappears from (see RequestsScreen's SessionCard "Dismiss" and the
+     * history header's "Clear"), so diffing against it - rather than trusting
+     * whoever removed the entry to also remember to cancel its notification -
+     * is what makes both of those actually clear the notification shade. */
+    private fun updateSessionNotifications(history: List<SessionNotify>) {
+        val currentKeys = history.map { sessionKey(it.sessionId, it.ts) }.toSet()
+        for (staleKey in notifiedSessionKeys - currentKeys) {
+            NotificationManagerCompat.from(this).cancel(staleKey.hashCode())
+        }
+        notifiedSessionKeys = notifiedSessionKeys intersect currentKeys
+    }
+
+    /** A notification posted by a previous, now-dead process has no entry in
+     * this fresh instance's notifiedReqIds/notifiedSessionKeys (both reset to
+     * empty on process start) and DaemonLinkManager's own state is reset the
+     * same way, so nothing here would otherwise think to cancel it - it would
+     * just sit in the shade, un-actionable, until manually swiped away. Runs
+     * once at startup, before any of the reactive collectors above take over. */
+    private fun cancelOrphanedNotifications() {
+        val manager = getSystemService(NotificationManager::class.java)
+        val liveRequestIds = DaemonLinkManager.requests.value.map { it.reqId.hashCode() }.toSet()
+        val liveSessionIds = DaemonLinkManager.sessionHistory.value
+            .map { sessionKey(it.sessionId, it.ts).hashCode() }.toSet()
+        for (sbn in manager.activeNotifications) {
+            val stillLive = when (sbn.notification.channelId) {
+                requestChannelId -> sbn.id in liveRequestIds
+                sessionChannelId -> sbn.id in liveSessionIds
+                else -> true
+            }
+            if (!stillLive) manager.cancel(sbn.id)
+        }
+    }
+
     private fun postRequestNotification(request: ApprovalRequest) {
         val builder = NotificationCompat.Builder(this, requestChannelId)
             .setContentTitle("${request.toolName} — ${request.deviceName}")
@@ -197,8 +251,16 @@ class ConnectionService : Service() {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .build()
-        NotificationManagerCompat.from(this).notify("${notify.sessionId}_${notify.ts}".hashCode(), notification)
+        val key = sessionKey(notify.sessionId, notify.ts)
+        notifiedSessionKeys = notifiedSessionKeys + key
+        NotificationManagerCompat.from(this).notify(key.hashCode(), notification)
     }
+
+    /** sessionId+ts together identify one notify (see DaemonLinkManager.
+     * dismissSessionNotification) - the single source of truth for turning
+     * that pair into a notification id, so posting and cancelling can never
+     * compute it differently. */
+    private fun sessionKey(sessionId: String, ts: Double) = "${sessionId}_${ts}"
 
     private fun actionPendingIntent(reqId: String, action: String, code: Int, reply: String? = null): PendingIntent {
         val intent = Intent(this, ApprovalActionReceiver::class.java).apply {
