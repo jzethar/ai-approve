@@ -55,6 +55,16 @@ enum class Transport { TCP, BLUETOOTH }
 object DaemonLinkManager {
     private const val MAX_SESSION_HISTORY = 20
 
+    // Mirrors daemon/protocol.py's REQUEST_TIMEOUT_SECONDS by hand (the phone
+    // has no way to read that file) - the daemon gives up waiting on the
+    // phone and sends an explicit "cancel" for the req_id at that point (see
+    // DeviceLink's onCancel below), so this is purely a backstop: if that
+    // message never arrives (link dropped, daemon crashed, app was backgrounded
+    // through a doze cycle...), the sweep in the init block below still drops
+    // the card/notification on its own instead of leaving it stuck forever.
+    private const val REQUEST_TIMEOUT_SECONDS = 100.0
+    private const val SWEEP_INTERVAL_MS = 5000L
+
     private val links = mutableMapOf<String, DeviceLink>() // keyed by pairing id
 
     private val _connectionStates = MutableStateFlow<Map<String, ConnectionState>>(emptyMap())
@@ -105,6 +115,9 @@ object DaemonLinkManager {
                 _notifications.tryEmit(notify)
                 _sessionHistory.update { current -> (listOf(notify) + current).take(MAX_SESSION_HISTORY) }
             },
+            onCancel = { reqId ->
+                _requests.update { current -> current.filterNot { it.reqId == reqId } }
+            },
         )
         links[pairing.id] = link
         link.start()
@@ -144,6 +157,21 @@ object DaemonLinkManager {
     fun clearSessionHistory() {
         _sessionHistory.value = emptyList()
     }
+
+    init {
+        // Backstop sweep for stuck request cards - see REQUEST_TIMEOUT_SECONDS
+        // above for why this exists alongside the daemon's own "cancel" push.
+        Thread {
+            while (true) {
+                Thread.sleep(SWEEP_INTERVAL_MS)
+                val now = System.currentTimeMillis() / 1000.0
+                _requests.update { current -> current.filterNot { now - it.ts > REQUEST_TIMEOUT_SECONDS } }
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+    }
 }
 
 /** One paired computer's connection: races a TCP attempt and (if the
@@ -163,6 +191,7 @@ private class DeviceLink(
     private val onTransport: (Transport?) -> Unit,
     private val onRequest: (ApprovalRequest) -> Unit,
     private val onNotify: (SessionNotify) -> Unit,
+    private val onCancel: (String) -> Unit,
 ) {
     @Volatile private var channel: SecureChannel? = null
     @Volatile private var shouldRun = false
@@ -349,6 +378,7 @@ private class DeviceLink(
             when (val msg = parseIncoming(String(line, Charsets.UTF_8))) {
                 is IncomingMessage.Req -> onRequest(toApprovalRequest(msg.message))
                 is IncomingMessage.Notify -> onNotify(toSessionNotify(msg.message))
+                is IncomingMessage.Cancel -> onCancel(msg.reqId)
                 else -> {}
             }
         }

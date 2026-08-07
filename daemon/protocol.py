@@ -46,10 +46,28 @@ import os
 # v4 peer just doesn't see the new field and stays TCP-only against a macOS
 # v5 daemon (which is a no-op change from today, since macOS Bluetooth
 # effectively never worked before this).
-PROTOCOL_VERSION = 5
+#
+# v6: adds the "cancel" message (daemon -> phone), sent when the daemon
+# gives up waiting on a request past REQUEST_TIMEOUT_SECONDS - see
+# build_cancel() below. Purely additive (a new message type an old app
+# never sees), so a pre-v6 app just keeps showing a request card the
+# daemon has already abandoned until the phone's own request notification/
+# card is dismissed by hand; the app-side self-expiry timer that mirrors
+# REQUEST_TIMEOUT_SECONDS (DaemonLinkManager.kt) is what actually needs the
+# new app build, not this wire change itself.
+PROTOCOL_VERSION = 6
 TOOL_INPUT_TRUNCATE = 1200
 STATE_DIR_NAME = ".phone-ai-approve"
 RUNTIME_DIR_NAME = "phone-ai-approve"
+
+# How long the daemon waits for the phone to answer a request before giving
+# up and telling the hook to fail open - see approve_daemon.py's
+# handle_local_request(). Single source of truth for both that wait and the
+# "cancel" message sent to the phone when it expires, so the two can never
+# drift apart; DaemonLinkManager.kt's REQUEST_TIMEOUT_SECONDS mirrors this
+# value by hand (see its own comment) since the phone has no way to read
+# this file.
+REQUEST_TIMEOUT_SECONDS = 100.0
 
 # Fixed RFCOMM channel the daemon's Bluetooth listener binds to and the app
 # connects to directly (by channel number, not SDP lookup) - see
@@ -174,6 +192,14 @@ def build_notify(session_id, cwd, message, ts) -> dict:
         "message": message,
         "ts": ts,
     }
+
+
+def build_cancel(req_id) -> dict:
+    """Daemon -> phone: this request is dead (timed out, or the hook's
+    local connection dropped before an answer came back), so the phone
+    should drop its card/notification for req_id immediately rather than
+    leaving it stuck until its own self-expiry timer catches up."""
+    return {"type": "cancel", "req_id": req_id}
 
 
 # ---- Local AF_UNIX messages (hook <-> daemon) ----

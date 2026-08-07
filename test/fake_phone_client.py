@@ -54,6 +54,10 @@ def _reader_thread(conn):
                 f"cwd:     {msg['cwd']}\n"
                 f"message: {msg['message']}\n"
             )
+        elif msg.get("type") == "cancel":
+            if _pending_req_id[0] == msg.get("req_id"):
+                _pending_req_id[0] = None
+            print(f"\n[cancel] req_id={msg.get('req_id')} - daemon gave up waiting, drop this card\n")
 
 
 def main():
